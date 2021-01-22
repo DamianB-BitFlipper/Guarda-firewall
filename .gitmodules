@@ -1,0 +1,3 @@
+[submodule "webauthn"]
+	path = webauthn
+	url = https://github.com/JSmith-BitFlipper/webauthn.git
