@@ -6,6 +6,7 @@ require (
 	github.com/cloudflare/cfssl v1.5.0 // indirect
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible // indirect
 	github.com/fxamacker/cbor/v2 v2.2.0 // indirect
+	github.com/gorilla/mux v1.8.0 // indirect
 	github.com/jinzhu/gorm v1.9.16
 	github.com/mitchellh/mapstructure v1.4.1 // indirect
 	github.com/satori/go.uuid v1.2.0 // indirect
