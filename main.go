@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -11,10 +12,14 @@ import (
 	log "unknwon.dev/clog/v2"
 
 	"github.com/JSmith-BitFlipper/webauthn-firewall-proxy/db"
+	"webauthn/webauthn"
 )
 
 var (
-	verbose bool = true
+	reverseProxyPort int = 8081
+	originPort       int = 8080
+	webauthnAPI      *webauthn.WebAuthn
+	verbose          bool = true
 )
 
 type WebauthnFirewall struct {
@@ -51,19 +56,62 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 	if verbose {
 		logRequest(r)
 	}
-
-	// ADDED
-	log.Info("LIKE I SHOULD!")
+	// Set the header info
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Write([]byte("Waiting for the exhale!"))
+	w.Header().Set("Content-Type", "application/json")
 
-	// TODO webauthn begin register, make a webauthn user struct that implements webauthn.User
-	// and a ToWebauthnUser from the database somehow
+	// Parse the JSON `http.Request`
+	var reqBody struct {
+		Username string `json:"username"`
+	}
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Get a `webauthnUser` for the requested username
+	wuser, err := db.WebauthnStore.GetWebauthnUser(reqBody.Username)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// TODO
+	// registerOptions := func(credCreationOpts *protocol.PublicKeyCredentialCreationOptions) {
+	// 	credCreationOpts.CredentialExcludeList = wuser.CredentialExcludeList()
+	// }
+
+	// generate PublicKeyCredentialCreationOptions, session data
+	options, sessionData, err := webauthnAPI.BeginRegistration(
+		wuser,
+		// TODO registerOptions,
+	)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Convert the `options` into JSON format
+	json_response, err := json.Marshal(options.Response)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// TODO: Save the `sessionData`
+	log.Info("Session Data: %+v", sessionData)
+
+	// Return the `json_response`
+	w.WriteHeader(http.StatusOK)
+	w.Write(json_response)
 }
 
 func main() {
-	reverseProxyPort := 8081
-	originPort := 8080
 	origin, _ := url.Parse(fmt.Sprintf("http://localhost:%d/", originPort))
 
 	director := func(req *http.Request) {
@@ -89,6 +137,7 @@ func main() {
 
 	// Proxy methods
 	r.HandleFunc("/api/user", wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST")
+	r.HandleFunc("/api/users/login", wfirewall.proxyRequest).Methods("OPTIONS", "POST")
 	r.HandleFunc("/api/tags", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
 	r.HandleFunc("/api/profiles/{user}", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
 	r.HandleFunc("/api/articles/feed", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
@@ -112,8 +161,20 @@ func main() {
 }
 
 func init() {
+	// Initialize the logger code
 	err := log.NewConsole()
 	if err != nil {
 		panic("Unable to create new logger: " + err.Error())
 	}
+
+	// Initialize the Webauthn API code
+	webauthnAPI, err = webauthn.New(&webauthn.Config{
+		RPDisplayName: "Foobar Corp.",                                        // Display Name for your site
+		RPID:          "localhost",                                           // Generally the domain name for your site
+		RPOrigin:      fmt.Sprintf("https://localhost:%d", reverseProxyPort), // The origin URL for WebAuthn requests
+	})
+	if err != nil {
+		panic("Unable to initialize Webauthn API: " + err.Error())
+	}
+
 }
