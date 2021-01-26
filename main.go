@@ -13,12 +13,14 @@ import (
 
 	"github.com/JSmith-BitFlipper/webauthn-firewall-proxy/db"
 	"webauthn/webauthn"
+	"webauthn_utils/session"
 )
 
 var (
 	reverseProxyPort int = 8081
 	originPort       int = 8080
 	webauthnAPI      *webauthn.WebAuthn
+	sessionStore     *session.Store
 	verbose          bool = true
 )
 
@@ -103,8 +105,13 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// TODO: Save the `sessionData`
-	log.Info("Session Data: %+v", sessionData)
+	// Save the `sessionData` as marshaled JSON
+	err = sessionStore.SaveWebauthnSession("registration", sessionData, r, w)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	// Return the `json_response`
 	w.WriteHeader(http.StatusOK)
@@ -153,7 +160,6 @@ func main() {
 	log.Info("Starting up server on port: %d", reverseProxyPort)
 	log.Info("Forwarding HTTP: %d -> %d", reverseProxyPort, originPort)
 
-	// TODO: Make this TLS
 	log.Fatal("%v", http.ListenAndServe(fmt.Sprintf(":%d", reverseProxyPort), r))
 
 	// Graceful stopping all loggers before exiting the program.
@@ -177,4 +183,9 @@ func init() {
 		panic("Unable to initialize Webauthn API: " + err.Error())
 	}
 
+	// Initialize the Webauthn `sessionStore`
+	sessionStore, err = session.NewStore()
+	if err != nil {
+		panic("Failed to create webauthn session store: " + err.Error())
+	}
 }
