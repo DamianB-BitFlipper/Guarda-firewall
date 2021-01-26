@@ -48,7 +48,8 @@ func (proxy *WebauthnFirewall) optionsHandler(allowMethods ...string) func(w htt
 		// Set the return OPTIONS
 		w.Header().Set("Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", strings.Join(allowMethods, ","))
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Origin", "https://localhost:4100")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -59,13 +60,15 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 		logRequest(r)
 	}
 	// Set the header info
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", "https://localhost:4100")
+	w.Header().Set("Access-Control-Allow-Credentials", "true") // Allow setting cookies, used by `sessionStore`
 	w.Header().Set("Content-Type", "application/json")
 
 	// Parse the JSON `http.Request`
 	var reqBody struct {
 		Username string `json:"username"`
 	}
+
 	err := json.NewDecoder(r.Body).Decode(&reqBody)
 	if err != nil {
 		log.Error("%v", err)
@@ -77,7 +80,7 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 	wuser, err := db.WebauthnStore.GetWebauthnUser(reqBody.Username)
 	if err != nil {
 		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -105,8 +108,68 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// TODO: Sometimes this does not save!
 	// Save the `sessionData` as marshaled JSON
 	err = sessionStore.SaveWebauthnSession("registration", sessionData, r, w)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return the `json_response`
+	w.WriteHeader(http.StatusOK)
+	w.Write(json_response)
+}
+
+func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Request) {
+	if verbose {
+		logRequest(r)
+	}
+	// Set the header info
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Parse the JSON `http.Request`
+	var reqBody struct {
+		Username  string `json:"username"`
+		Assertion string `json:"assertion"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Get a `webauthnUser` for the requested username
+	wuser, err := db.WebauthnStore.GetWebauthnUser(reqBody.Username)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Load the session data
+	sessionData, err := sessionStore.GetWebauthnSession("registration", r)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	credential, err := webauthnAPI.FinishRegistration(wuser, sessionData, reqBody.Assertion)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// ADDED, Save the `credential` to DB
+	log.Info("Creds: %v", credential)
+
+	// Convert the `options` into JSON format
+	json_response, err := json.Marshal(reqBody)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -155,6 +218,9 @@ func main() {
 	// Webauthn methods
 	r.HandleFunc("/api/webauthn/begin_register", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
 	r.HandleFunc("/api/webauthn/begin_register", wfirewall.beginRegister).Methods("POST")
+
+	r.HandleFunc("/api/webauthn/finish_register", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
+	r.HandleFunc("/api/webauthn/finish_register", wfirewall.finishRegister).Methods("POST")
 
 	// Start up the server
 	log.Info("Starting up server on port: %d", reverseProxyPort)
