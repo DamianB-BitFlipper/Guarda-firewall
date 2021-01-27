@@ -17,11 +17,17 @@ import (
 )
 
 var (
-	reverseProxyPort int = 8081
-	originPort       int = 8080
-	webauthnAPI      *webauthn.WebAuthn
-	sessionStore     *session.Store
-	verbose          bool = true
+	frontendPort        int    = 4100
+	frontendAddress     string = fmt.Sprintf("https://localhost:%d", frontendPort)
+	backendPort         int    = 8080
+	backendAddress      string = fmt.Sprintf("http://localhost:%d", backendPort)
+	reverseProxyPort    int    = 8081
+	reverseProxyAddress string = fmt.Sprintf("localhost:%d", reverseProxyPort)
+
+	webauthnAPI  *webauthn.WebAuthn
+	sessionStore *session.Store
+
+	verbose bool = true
 )
 
 type WebauthnFirewall struct {
@@ -48,7 +54,7 @@ func (proxy *WebauthnFirewall) optionsHandler(allowMethods ...string) func(w htt
 		// Set the return OPTIONS
 		w.Header().Set("Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", strings.Join(allowMethods, ","))
-		w.Header().Set("Access-Control-Allow-Origin", "https://localhost:4100")
+		w.Header().Set("Access-Control-Allow-Origin", frontendAddress)
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		w.WriteHeader(http.StatusNoContent)
@@ -60,8 +66,8 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 		logRequest(r)
 	}
 	// Set the header info
-	w.Header().Set("Access-Control-Allow-Origin", "https://localhost:4100")
-	w.Header().Set("Access-Control-Allow-Credentials", "true") // Allow setting cookies, used by `sessionStore`
+	w.Header().Set("Access-Control-Allow-Origin", frontendAddress)
+	w.Header().Set("Access-Control-Allow-Credentials", "true") // Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Content-Type", "application/json")
 
 	// Parse the JSON `http.Request`
@@ -108,7 +114,8 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// TODO: Sometimes this does not save!
+	// TODO: Sometimes throws error if has old session cookie
+	//
 	// Save the `sessionData` as marshaled JSON
 	err = sessionStore.SaveWebauthnSession("registration", sessionData, r, w)
 	if err != nil {
@@ -127,12 +134,15 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 		logRequest(r)
 	}
 	// Set the header info
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", frontendAddress)
+	w.Header().Set("Access-Control-Allow-Credentials", "true") // Allow transmitting cookies, used by `sessionStore`
+	w.Header().Set("Content-Type", "application/json")
 
 	// Parse the JSON `http.Request`
 	var reqBody struct {
-		Username  string `json:"username"`
-		Assertion string `json:"assertion"`
+		Username   string `json:"username"`
+		Assertion  string `json:"assertion"`
+		RedirectTo string `json:"redirect_to"`
 	}
 
 	err := json.NewDecoder(r.Body).Decode(&reqBody)
@@ -165,11 +175,11 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// ADDED, Save the `credential` to DB
-	log.Info("Creds: %v", credential)
+	// Save the `credential` to the database
+	db.WebauthnStore.Create(wuser.WebAuthnName(), *credential)
 
-	// Convert the `options` into JSON format
-	json_response, err := json.Marshal(reqBody)
+	// Marshal a response `redirectTo` url
+	json_response, err := json.Marshal(map[string]string{"redirectTo": reqBody.RedirectTo})
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -182,7 +192,7 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 }
 
 func main() {
-	origin, _ := url.Parse(fmt.Sprintf("http://localhost:%d/", originPort))
+	origin, _ := url.Parse(backendAddress)
 
 	director := func(req *http.Request) {
 		req.Header.Add("X-Forwarded-Host", req.Host)
@@ -224,9 +234,9 @@ func main() {
 
 	// Start up the server
 	log.Info("Starting up server on port: %d", reverseProxyPort)
-	log.Info("Forwarding HTTP: %d -> %d", reverseProxyPort, originPort)
+	log.Info("Forwarding HTTP: %d -> %d", reverseProxyPort, backendPort)
 
-	log.Fatal("%v", http.ListenAndServe(fmt.Sprintf(":%d", reverseProxyPort), r))
+	log.Fatal("%v", http.ListenAndServe(reverseProxyAddress, r))
 
 	// Graceful stopping all loggers before exiting the program.
 	log.Stop()
@@ -241,9 +251,9 @@ func init() {
 
 	// Initialize the Webauthn API code
 	webauthnAPI, err = webauthn.New(&webauthn.Config{
-		RPDisplayName: "Foobar Corp.",                                        // Display Name for your site
-		RPID:          "localhost",                                           // Generally the domain name for your site
-		RPOrigin:      fmt.Sprintf("https://localhost:%d", reverseProxyPort), // The origin URL for WebAuthn requests
+		RPDisplayName: "Foobar Corp.",  // Display Name for your site
+		RPID:          "localhost",     // Generally the domain name for your site
+		RPOrigin:      frontendAddress, // Have the front-end be the origin URL for WebAuthn requests
 	})
 	if err != nil {
 		panic("Unable to initialize Webauthn API: " + err.Error())

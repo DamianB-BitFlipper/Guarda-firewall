@@ -18,7 +18,11 @@ var _ webauthn.User = webauthnUser{}
 
 func (w webauthnUser) WebAuthnID() []byte {
 	buf := make([]byte, binary.MaxVarintLen64)
-	binary.PutUvarint(buf, uint64(w.userID))
+
+	// This application does not keep track of `userID`s,
+	// accessing occurs via `username`
+	binary.PutUvarint(buf, uint64(0))
+
 	return buf
 }
 

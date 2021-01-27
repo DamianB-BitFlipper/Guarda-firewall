@@ -64,49 +64,53 @@ func (db *webauthnStore) numCredentials(username string) (count int64) {
 	err := db.Model(new(WebauthnEntry)).Where("username = ?", username).Count(&count).Error
 	if err != nil {
 		log.Error("Failed to count webauthn entries [username: %d]: %v", username, err)
+		return 0
 	}
-	return count
+	return
 }
 
-func (db *webauthnStore) getCredentials(username string) ([]*WebauthnEntry, error) {
+func (db *webauthnStore) getCredentials(username string) (*WebauthnEntry, error) {
 	ncreds := db.numCredentials(username)
-	entries := make([]*WebauthnEntry, 0, ncreds)
-
-	err := db.Model(new(WebauthnEntry)).Where("username = ?", username).Find(&entries).Error
-	if err != nil {
-		log.Error("Failed to get webauthn entries [username: %d]: %v", username, err)
-		return []*WebauthnEntry{}, err
+	if ncreds == 0 {
+		return nil, nil
 	}
 
-	return entries, nil
+	entry := new(WebauthnEntry)
+
+	err := db.Model(new(WebauthnEntry)).Where("username = ?", username).First(&entry).Error
+	if err != nil {
+		log.Error("Failed to get webauthn entries [username: %d]: %v", username, err)
+		return nil, err
+	}
+
+	return entry, nil
 }
 
 func (db *webauthnStore) GetWebauthnUser(username string) (webauthnUser, error) {
-	// Convert the slice of `WebauthnEntry` to `webauthn.Credential`
-	entries, err := WebauthnStore.getCredentials(username)
+	// Get the webauthn entry corresponding to the input `username`
+	entry, err := WebauthnStore.getCredentials(username)
 	if err != nil {
 		return webauthnUser{}, err
 	}
 
-	credentials := make([]webauthn.Credential, 0, len(entries))
-
-	for _, entry := range entries {
-		// Rebuild the `credential` from the `entry`
-		var credential webauthn.Credential
-		credential.ID = entry.CredID
-		credential.PublicKey = entry.PubKey
-		credential.Authenticator = webauthn.Authenticator{SignCount: entry.SignCount}
-
-		// Append `credential` to the `credentials` slice
-		credentials = append(credentials, credential)
-	}
-
-	// TODO: I need to differentiate webauthn user ID and webauthn credential entries
-	// Why are the multiple credential entries per user, seems redundant and dumb
 	w := webauthnUser{
-		userID:      69420, // TODO
 		username:    username,
-		credentials: credentials,
+		credentials: nil,
 	}
+
+	// If there is not a webauthn credential yet, return as is
+	if entry == nil {
+		return w, nil
+	}
+
+	// Rebuild the `credential` from the `entry`
+	var credential webauthn.Credential
+	credential.ID = entry.CredID
+	credential.PublicKey = entry.PubKey
+	credential.Authenticator = webauthn.Authenticator{SignCount: entry.SignCount}
+
+	// Set the `credential` into the `webauthnUser`
+	w.credentials = []webauthn.Credential{credential}
+
 	return w, nil
 }
