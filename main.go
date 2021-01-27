@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/gorilla/mux"
@@ -16,18 +18,23 @@ import (
 	"webauthn_utils/session"
 )
 
+const (
+	frontendPort     int = 4100
+	backendPort      int = 8080
+	reverseProxyPort int = 8081
+
+	ENV_SESSION_KEY string = "SESSION_KEY"
+
+	verbose bool = true
+)
+
 var (
-	frontendPort        int    = 4100
 	frontendAddress     string = fmt.Sprintf("https://localhost:%d", frontendPort)
-	backendPort         int    = 8080
 	backendAddress      string = fmt.Sprintf("http://localhost:%d", backendPort)
-	reverseProxyPort    int    = 8081
 	reverseProxyAddress string = fmt.Sprintf("localhost:%d", reverseProxyPort)
 
 	webauthnAPI  *webauthn.WebAuthn
 	sessionStore *session.Store
-
-	verbose bool = true
 )
 
 type WebauthnFirewall struct {
@@ -114,7 +121,8 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// TODO: Sometimes throws error if has old session cookie
+	// TODO: Make DB log same format as rest of firewall
+	// Remove is_webauthn_enabled code from the backed to exclusively the firewall
 	//
 	// Save the `sessionData` as marshaled JSON
 	err = sessionStore.SaveWebauthnSession("registration", sessionData, r, w)
@@ -259,9 +267,29 @@ func init() {
 		panic("Unable to initialize Webauthn API: " + err.Error())
 	}
 
+	// Get the session key from the environment variable
+	sessionKey, err := hex.DecodeString(os.Getenv(ENV_SESSION_KEY))
+	if err != nil {
+		panic("Failed to decode session key env variable: " + err.Error())
+	}
+
+	if len(sessionKey) < session.DefaultEncryptionKeyLength {
+		panic(fmt.Sprintf("Session key not long enough: %d < %d",
+			len(sessionKey), session.DefaultEncryptionKeyLength))
+	}
+
 	// Initialize the Webauthn `sessionStore`
-	sessionStore, err = session.NewStore()
+	sessionStore, err = session.NewStore(sessionKey)
 	if err != nil {
 		panic("Failed to create webauthn session store: " + err.Error())
 	}
+}
+
+func genSessionKey() {
+	key, err := session.GenerateSecureKey(session.DefaultEncryptionKeyLength)
+	if err != nil {
+		panic("Unable to generate secure session key: " + err.Error())
+	}
+
+	fmt.Printf("export %s=%s\n", ENV_SESSION_KEY, hex.EncodeToString(key))
 }
