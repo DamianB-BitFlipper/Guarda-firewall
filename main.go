@@ -45,6 +45,16 @@ func logRequest(r *http.Request) {
 	log.Info("%s:\t%s", r.Method, r.URL)
 }
 
+func (proxy *WebauthnFirewall) preamble(w http.ResponseWriter, r *http.Request) {
+	if verbose {
+		logRequest(r)
+	}
+
+	// Set the header info
+	w.Header().Set("Access-Control-Allow-Origin", frontendAddress)
+	w.Header().Set("Content-Type", "application/json")
+}
+
 func (proxy *WebauthnFirewall) proxyRequest(w http.ResponseWriter, r *http.Request) {
 	if verbose {
 		logRequest(r)
@@ -68,14 +78,37 @@ func (proxy *WebauthnFirewall) optionsHandler(allowMethods ...string) func(w htt
 	}
 }
 
-func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Request) {
-	if verbose {
-		logRequest(r)
+// TODO!: Check some sort of token before responding to this since any user can
+// be queried with the GET to retrieve their webauthn status
+func (proxy *WebauthnFirewall) webauthnIsEnabled(w http.ResponseWriter, r *http.Request) {
+	// Call the proxy preamble
+	proxy.preamble(w, r)
+
+	// Get the `user` variable passed in the url
+	vars := mux.Vars(r)
+	username := vars["user"]
+
+	isEnabled := db.WebauthnStore.IsUserEnabled(username)
+
+	// Marshal a response `webauthn_is_enabled` field
+	json_response, err := json.Marshal(map[string]bool{"webauthn_is_enabled": isEnabled})
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	// Set the header info
-	w.Header().Set("Access-Control-Allow-Origin", frontendAddress)
-	w.Header().Set("Access-Control-Allow-Credentials", "true") // Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Content-Type", "application/json")
+
+	// Return the `json_response`
+	w.WriteHeader(http.StatusOK)
+	w.Write(json_response)
+}
+
+func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Request) {
+	// Call the proxy preamble
+	proxy.preamble(w, r)
+
+	// Allow transmitting cookies, used by `sessionStore`
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 	// Parse the JSON `http.Request`
 	var reqBody struct {
@@ -121,9 +154,6 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// TODO: Make DB log same format as rest of firewall
-	// Remove is_webauthn_enabled code from the backed to exclusively the firewall
-	//
 	// Save the `sessionData` as marshaled JSON
 	err = sessionStore.SaveWebauthnSession("registration", sessionData, r, w)
 	if err != nil {
@@ -138,13 +168,11 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 }
 
 func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Request) {
-	if verbose {
-		logRequest(r)
-	}
-	// Set the header info
-	w.Header().Set("Access-Control-Allow-Origin", frontendAddress)
-	w.Header().Set("Access-Control-Allow-Credentials", "true") // Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Content-Type", "application/json")
+	// Call the proxy preamble
+	proxy.preamble(w, r)
+
+	// Allow transmitting cookies, used by `sessionStore`
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 	// Parse the JSON `http.Request`
 	var reqBody struct {
@@ -224,7 +252,7 @@ func main() {
 	r := mux.NewRouter()
 
 	// Proxy methods
-	r.HandleFunc("/api/user", wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST")
+	r.HandleFunc("/api/user", wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST", "PUT")
 	r.HandleFunc("/api/users/login", wfirewall.proxyRequest).Methods("OPTIONS", "POST")
 	r.HandleFunc("/api/tags", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
 	r.HandleFunc("/api/profiles/{user}", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
@@ -234,6 +262,9 @@ func main() {
 	r.HandleFunc("/api/articles/{user}/comments", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
 
 	// Webauthn methods
+	r.HandleFunc("/api/webauthn/is_enabled/{user}", wfirewall.optionsHandler("GET")).Methods("OPTIONS")
+	r.HandleFunc("/api/webauthn/is_enabled/{user}", wfirewall.webauthnIsEnabled).Methods("GET")
+
 	r.HandleFunc("/api/webauthn/begin_register", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
 	r.HandleFunc("/api/webauthn/begin_register", wfirewall.beginRegister).Methods("POST")
 

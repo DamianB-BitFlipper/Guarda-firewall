@@ -86,6 +86,10 @@ func (db *webauthnStore) getCredentials(username string) (*WebauthnEntry, error)
 	return entry, nil
 }
 
+func (db *webauthnStore) IsUserEnabled(username string) bool {
+	return db.numCredentials(username) > 0
+}
+
 func (db *webauthnStore) GetWebauthnUser(username string) (webauthnUser, error) {
 	// Get the webauthn entry corresponding to the input `username`
 	entry, err := WebauthnStore.getCredentials(username)
