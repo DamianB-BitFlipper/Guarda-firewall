@@ -259,27 +259,15 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 
 // TODO: They way errors are handled on the front end are slightly different
 // than this `http.Error` stuff
-func (proxy *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *http.Request) {
-	// Call the proxy preamble
-	proxy.preamble(w, r)
+func (proxy *WebauthnFirewall) beginAttestation_base(
+	username string, clientExtensions protocol.AuthenticationExtensions,
+	w http.ResponseWriter, r *http.Request) {
 
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	// Parse the JSON `http.Request`
-	var reqBody struct {
-		Username string `json:"username"`
-	}
-
-	err := json.NewDecoder(r.Body).Decode(&reqBody)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	// See if the user has webauthn enabled
-	isEnabled := db.WebauthnStore.IsUserEnabled(reqBody.Username)
+	isEnabled := db.WebauthnStore.IsUserEnabled(username)
 
 	// Do nothing if the user does not have webauthn enabled
 	if !isEnabled {
@@ -288,13 +276,15 @@ func (proxy *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *http.Request
 	}
 
 	// Get a `webauthnUser` for the requested username
-	wuser, err := db.WebauthnStore.GetWebauthnUser(reqBody.Username)
+	wuser, err := db.WebauthnStore.GetWebauthnUser(username)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	// The `clientExtensions` in BeginLogin is now superfluous
+	//
 	// Generate the webauthn `options` and `sessionData`
 	options, sessionData, err := webauthnAPI.BeginLogin(wuser, nil)
 	if err != nil {
@@ -302,6 +292,9 @@ func (proxy *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Add the `clientExtensions` onto the webauthn `options`
+	options.Response.Extensions = clientExtensions
 
 	// Convert the `options` into JSON format
 	json_response, err := json.Marshal(options.Response)
@@ -322,6 +315,51 @@ func (proxy *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *http.Request
 	// Return the `json_response`
 	w.WriteHeader(http.StatusOK)
 	w.Write(json_response)
+}
+
+func (proxy *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *http.Request) {
+	// Call the proxy preamble
+	proxy.preamble(w, r)
+
+	// Parse the JSON `http.Request`
+	var reqBody struct {
+		Username           string `json:"username"`
+		AuthenticationText string `json:"auth_text"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Set the transaction authentication extension
+	extensions := make(protocol.AuthenticationExtensions)
+	extensions["txAuthSimple"] = reqBody.AuthenticationText
+
+	proxy.beginAttestation_base(reqBody.Username, extensions, w, r)
+	return
+}
+
+func (proxy *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *http.Request) {
+	// Call the proxy preamble
+	proxy.preamble(w, r)
+
+	// Parse the JSON `http.Request`
+	var reqBody struct {
+		Username string `json:"username"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	proxy.beginAttestation_base(reqBody.Username, nil, w, r)
+	return
 }
 
 func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Request) {
@@ -425,12 +463,6 @@ func main() {
 	r.HandleFunc("/api/articles/{user}/comments", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
 
 	// Webauthn and other intercepted routes
-	r.HandleFunc("/api/webauthn/begin_login", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
-	r.HandleFunc("/api/webauthn/begin_login", wfirewall.beginLogin).Methods("POST")
-
-	r.HandleFunc("/api/users/login", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
-	r.HandleFunc("/api/users/login", wfirewall.finishLogin).Methods("POST")
-
 	r.HandleFunc("/api/webauthn/is_enabled/{user}", wfirewall.optionsHandler("GET")).Methods("OPTIONS")
 	r.HandleFunc("/api/webauthn/is_enabled/{user}", wfirewall.webauthnIsEnabled).Methods("GET")
 
@@ -439,6 +471,15 @@ func main() {
 
 	r.HandleFunc("/api/webauthn/finish_register", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
 	r.HandleFunc("/api/webauthn/finish_register", wfirewall.finishRegister).Methods("POST")
+
+	r.HandleFunc("/api/webauthn/begin_login", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
+	r.HandleFunc("/api/webauthn/begin_login", wfirewall.beginLogin).Methods("POST")
+
+	r.HandleFunc("/api/users/login", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
+	r.HandleFunc("/api/users/login", wfirewall.finishLogin).Methods("POST")
+
+	r.HandleFunc("/api/webauthn/begin_attestation", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
+	r.HandleFunc("/api/webauthn/begin_attestation", wfirewall.beginAttestation).Methods("POST")
 
 	// Start up the server
 	log.Info("Starting up server on port: %d", reverseProxyPort)
