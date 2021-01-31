@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/gorilla/mux"
@@ -206,9 +207,8 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 
 	// Parse the JSON `http.Request`
 	var reqBody struct {
-		Username   string `json:"username"`
-		Assertion  string `json:"assertion"`
-		RedirectTo string `json:"redirect_to"`
+		Username  string `json:"username"`
+		Assertion string `json:"assertion"`
 	}
 
 	err := json.NewDecoder(r.Body).Decode(&reqBody)
@@ -244,17 +244,8 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 	// Save the `credential` to the database
 	db.WebauthnStore.Create(wuser.WebAuthnName(), *credential)
 
-	// Marshal a response `redirectTo` url
-	json_response, err := json.Marshal(map[string]string{"redirectTo": reqBody.RedirectTo})
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Return the `json_response`
+	// Success!
 	w.WriteHeader(http.StatusOK)
-	w.Write(json_response)
 }
 
 // TODO: They way errors are handled on the front end are slightly different
@@ -360,6 +351,75 @@ func (proxy *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *http.Request
 
 	proxy.beginAttestation_base(reqBody.Username, nil, w, r)
 	return
+}
+
+func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Request) {
+	// Call the proxy preamble
+	proxy.preamble(w, r)
+
+	// Allow transmitting cookies, used by `sessionStore`
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+	// Parse the JSON `http.Request` now read into `data`
+	var reqBody struct {
+		Username  string `json:"username"`
+		Assertion string `json:"assertion"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Get a `webauthnUser` for the requested username
+	wuser, err := db.WebauthnStore.GetWebauthnUser(reqBody.Username)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Load the session data
+	sessionData, err := sessionStore.GetWebauthnSession("authentication", r)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// There are no extensions to verify during login authentication
+	var verifyTxAuthSimple protocol.ExtensionsVerifier = func(_, clientDataExtensions protocol.AuthenticationExtensions) error {
+		expectedExtensions := protocol.AuthenticationExtensions{
+			"txAuthSimple": fmt.Sprintf("Confirm disable webauthn for %v", reqBody.Username),
+		}
+
+		if !reflect.DeepEqual(expectedExtensions, clientDataExtensions) {
+			return fmt.Errorf("Extensions verification failed: Expected %v, Received %v",
+				expectedExtensions,
+				clientDataExtensions)
+		}
+
+		// Success!
+		return nil
+	}
+
+	// TODO: In an actual implementation, we should perform additional checks on
+	// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
+	// and then increment the credentials counter
+	_, err = webauthnAPI.FinishLogin(wuser, sessionData, verifyTxAuthSimple, reqBody.Assertion)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Save the `credential` to the database
+	db.WebauthnStore.Delete(wuser.WebAuthnName())
+
+	// Success!
+	w.WriteHeader(http.StatusOK)
 }
 
 func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Request) {
@@ -480,6 +540,9 @@ func main() {
 
 	r.HandleFunc("/api/webauthn/begin_attestation", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
 	r.HandleFunc("/api/webauthn/begin_attestation", wfirewall.beginAttestation).Methods("POST")
+
+	r.HandleFunc("/api/webauthn/disable", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
+	r.HandleFunc("/api/webauthn/disable", wfirewall.disableWebauthn).Methods("POST")
 
 	// Start up the server
 	log.Info("Starting up server on port: %d", reverseProxyPort)

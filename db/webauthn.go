@@ -13,7 +13,7 @@ type WebauthnEntry struct {
 	gorm.Model
 	// Metadata entries
 	ID          int64     `gorm:"PRIMARYKEY"`
-	Username    string    `gorm:"UNIQUE;NOT NULL"`
+	Username    string    `gorm:"UNIQUE;NOT NULL"` // TODO: Golang GORM sets deleted_at, so re-registering user will fail unique condition
 	Created     time.Time `gorm:"-"`
 	CreatedUnix int64
 
@@ -58,6 +58,14 @@ func (db *webauthnStore) Create(username string, credential webauthn.Credential)
 	}
 
 	return db.DB.Create(&wentry).Error
+}
+
+func (db *webauthnStore) Delete(username string) (err error) {
+	err = db.Model(new(WebauthnEntry)).Where("username = ?", username).Delete(new(WebauthnEntry)).Error
+	if err != nil {
+		log.Error("Failed to delete webauthn entry [username: %s]: %v", username, err)
+	}
+	return
 }
 
 func (db *webauthnStore) numCredentials(username string) (count int64) {
