@@ -500,6 +500,82 @@ func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Reques
 	return
 }
 
+func (proxy *WebauthnFirewall) deleteComment(w http.ResponseWriter, r *http.Request) {
+	// Print the HTTP request if verbosity is on
+	if verbose {
+		logRequest(r)
+	}
+
+	// Allow transmitting cookies, used by `sessionStore`
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+	// Get the `data` from the `http.Request` so that it can be restored again if necessary
+	data, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Parse the JSON `http.Request` now read into `data`
+	var reqBody struct {
+		Username  string `json:"username"`
+		Assertion string `json:"assertion"`
+	}
+
+	err = json.NewDecoder(bytes.NewReader(data)).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// See if the user has webauthn enabled
+	isEnabled := db.WebauthnStore.IsUserEnabled(reqBody.Username)
+
+	// Perform a webauthn check if webauthn is enabled for this user
+	if isEnabled {
+		// Get a `webauthnUser` for the requested username
+		wuser, err := db.WebauthnStore.GetWebauthnUser(reqBody.Username)
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Load the session data
+		sessionData, err := sessionStore.GetWebauthnSession("authentication", r)
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// There are no extensions to verify during login authentication
+		var noVerify protocol.ExtensionsVerifier = func(_, _ protocol.AuthenticationExtensions) error {
+			return nil
+		}
+
+		// TODO: In an actual implementation, we should perform additional checks on
+		// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
+		// and then increment the credentials counter
+		_, err = webauthnAPI.FinishLogin(wuser, sessionData, noVerify, reqBody.Assertion)
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Before proxying the response onward, restore the `r.Body` field
+	r.Body = ioutil.NopCloser(bytes.NewReader(data))
+
+	// Once the webauthn check passed, pass the request onward to
+	// the server to check the username and password
+	proxy.ServeHTTP(w, r)
+	return
+}
+
 func main() {
 	// Initialize a new webauthn firewall
 	wfirewall := NewWebauthnFirewall()
@@ -519,8 +595,8 @@ func main() {
 	r.HandleFunc("/api/profiles/{user}", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
 	r.HandleFunc("/api/articles/feed", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
 	r.HandleFunc("/api/articles", wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST")
-	r.HandleFunc("/api/articles/{user}", wfirewall.proxyRequest).Methods("OPTIONS", "GET", "DELETE")
-	r.HandleFunc("/api/articles/{user}/comments", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
+	r.HandleFunc("/api/articles/{slug}", wfirewall.proxyRequest).Methods("OPTIONS", "GET", "DELETE")
+	r.HandleFunc("/api/articles/{slug}/comments", wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST")
 
 	// Webauthn and other intercepted routes
 	r.HandleFunc("/api/webauthn/is_enabled/{user}", wfirewall.optionsHandler("GET")).Methods("OPTIONS")
@@ -543,6 +619,9 @@ func main() {
 
 	r.HandleFunc("/api/webauthn/disable", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
 	r.HandleFunc("/api/webauthn/disable", wfirewall.disableWebauthn).Methods("POST")
+
+	r.HandleFunc("/api/articles/{slug}/comments/{comment_id}", wfirewall.optionsHandler("DELETE")).Methods("OPTIONS")
+	r.HandleFunc("/api/articles/{slug}/comments/{comment_id}", wfirewall.deleteComment).Methods("DELETE")
 
 	// Start up the server
 	log.Info("Starting up server on port: %d", reverseProxyPort)

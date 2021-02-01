@@ -12,16 +12,15 @@ import (
 type WebauthnEntry struct {
 	gorm.Model
 	// Metadata entries
-	ID          int64     `gorm:"PRIMARYKEY"`
-	Username    string    `gorm:"UNIQUE;NOT NULL"` // TODO: Golang GORM sets deleted_at, so re-registering user will fail unique condition
+	Username    string    `gorm:"unique_index;not null"`
 	Created     time.Time `gorm:"-"`
 	CreatedUnix int64
 
 	// Webauthn entries
-	PubKey    []byte `gorm:"TYPE:VARCHAR(65);UNIQUE"`
-	CredID    []byte `gorm:"TYPE:VARCHAR(250);UNIQUE"`
-	SignCount uint32 `gorm:"DEFAULT:0"`
-	RPID      string `gorm:"COLUMN:rp_id;TYPE:VARCHAR(253)"`
+	PubKey    []byte `gorm:"type:varchar(65);unique"`
+	CredID    []byte `gorm:"type:varchar(250);unique"`
+	SignCount uint32 `gorm:"default:0"`
+	RPID      string `gorm:"column:rp_id;type:varchar(253)"`
 }
 
 // NOTE: This is a GORM create hook.
