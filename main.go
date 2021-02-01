@@ -389,7 +389,7 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// There are no extensions to verify during login authentication
+	// Verify the transaction authentication text
 	var verifyTxAuthSimple protocol.ExtensionsVerifier = func(_, clientDataExtensions protocol.AuthenticationExtensions) error {
 		expectedExtensions := protocol.AuthenticationExtensions{
 			"txAuthSimple": fmt.Sprintf("Confirm disable webauthn for %v", reqBody.Username),
@@ -500,6 +500,8 @@ func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Reques
 	return
 }
 
+// TODO: There is a lot of opportunity to condense this code into common functions
+// Can the front end just set the `username` to something garbled -> isEnabled = false, vioala!
 func (proxy *WebauthnFirewall) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// Print the HTTP request if verbosity is on
 	if verbose {
@@ -551,15 +553,26 @@ func (proxy *WebauthnFirewall) deleteComment(w http.ResponseWriter, r *http.Requ
 			return
 		}
 
-		// There are no extensions to verify during login authentication
-		var noVerify protocol.ExtensionsVerifier = func(_, _ protocol.AuthenticationExtensions) error {
+		// Verify the transaction authentication text
+		var verifyTxAuthSimple protocol.ExtensionsVerifier = func(_, clientDataExtensions protocol.AuthenticationExtensions) error {
+			expectedExtensions := protocol.AuthenticationExtensions{
+				"txAuthSimple": "Confirm comment delete",
+			}
+
+			if !reflect.DeepEqual(expectedExtensions, clientDataExtensions) {
+				return fmt.Errorf("Extensions verification failed: Expected %v, Received %v",
+					expectedExtensions,
+					clientDataExtensions)
+			}
+
+			// Success!
 			return nil
 		}
 
 		// TODO: In an actual implementation, we should perform additional checks on
 		// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
 		// and then increment the credentials counter
-		_, err = webauthnAPI.FinishLogin(wuser, sessionData, noVerify, reqBody.Assertion)
+		_, err = webauthnAPI.FinishLogin(wuser, sessionData, verifyTxAuthSimple, reqBody.Assertion)
 		if err != nil {
 			log.Error("%v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
