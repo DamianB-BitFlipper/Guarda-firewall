@@ -278,14 +278,14 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 // TODO: They way errors are handled on the front end are slightly different
 // than this `http.Error` stuff
 func (proxy *WebauthnFirewall) beginAttestation_base(
-	username string, clientExtensions protocol.AuthenticationExtensions,
+	query db.WebauthnQuery, clientExtensions protocol.AuthenticationExtensions,
 	w http.ResponseWriter, r *http.Request) {
 
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 	// See if the user has webauthn enabled
-	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUsername(username))
+	isEnabled := db.WebauthnStore.IsUserEnabled(query)
 
 	// Do nothing if the user does not have webauthn enabled
 	if !isEnabled {
@@ -293,8 +293,8 @@ func (proxy *WebauthnFirewall) beginAttestation_base(
 		return
 	}
 
-	// Get a `webauthnUser` for the requested username
-	wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUsername(username))
+	// Get a `webauthnUser` from the input `query`
+	wuser, err := db.WebauthnStore.GetWebauthnUser(query)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -339,13 +339,20 @@ func (proxy *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *http.R
 	// Call the proxy preamble
 	proxy.preamble(w, r)
 
+	// Retrieve the `userID` from the JWT token contained in the `http.Request`
+	userID, err := userIDFromJWT(r)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	// Parse the JSON `http.Request`
 	var reqBody struct {
-		Username           string `json:"username"`
 		AuthenticationText string `json:"auth_text"`
 	}
 
-	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	err = json.NewDecoder(r.Body).Decode(&reqBody)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -356,7 +363,7 @@ func (proxy *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *http.R
 	extensions := make(protocol.AuthenticationExtensions)
 	extensions["txAuthSimple"] = reqBody.AuthenticationText
 
-	proxy.beginAttestation_base(reqBody.Username, extensions, w, r)
+	proxy.beginAttestation_base(db.QueryByUserID(userID), extensions, w, r)
 	return
 }
 
@@ -376,77 +383,8 @@ func (proxy *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	proxy.beginAttestation_base(reqBody.Username, nil, w, r)
+	proxy.beginAttestation_base(db.QueryByUsername(reqBody.Username), nil, w, r)
 	return
-}
-
-func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Request) {
-	// Call the proxy preamble
-	proxy.preamble(w, r)
-
-	// Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
-
-	// Parse the JSON `http.Request` now read into `data`
-	var reqBody struct {
-		Username  string `json:"username"`
-		Assertion string `json:"assertion"`
-	}
-
-	err := json.NewDecoder(r.Body).Decode(&reqBody)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Get a `webauthnUser` for the requested username
-	wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUsername(reqBody.Username))
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Load the session data
-	sessionData, err := sessionStore.GetWebauthnSession("authentication", r)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Verify the transaction authentication text
-	var verifyTxAuthSimple protocol.ExtensionsVerifier = func(_, clientDataExtensions protocol.AuthenticationExtensions) error {
-		expectedExtensions := protocol.AuthenticationExtensions{
-			"txAuthSimple": fmt.Sprintf("Confirm disable webauthn for %v", reqBody.Username),
-		}
-
-		if !reflect.DeepEqual(expectedExtensions, clientDataExtensions) {
-			return fmt.Errorf("Extensions verification failed: Expected %v, Received %v",
-				expectedExtensions,
-				clientDataExtensions)
-		}
-
-		// Success!
-		return nil
-	}
-
-	// TODO: In an actual implementation, we should perform additional checks on
-	// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
-	// and then increment the credentials counter
-	_, err = webauthnAPI.FinishLogin(wuser, sessionData, verifyTxAuthSimple, reqBody.Assertion)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Save the `credential` to the database
-	db.WebauthnStore.Delete(wuser.WebAuthnName())
-
-	// Success!
-	w.WriteHeader(http.StatusOK)
 }
 
 func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Request) {
@@ -527,6 +465,82 @@ func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Reques
 	return
 }
 
+func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Request) {
+	// Call the proxy preamble
+	proxy.preamble(w, r)
+
+	// Allow transmitting cookies, used by `sessionStore`
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+	// Retrieve the `userID` from the JWT token contained in the `http.Request`
+	userID, err := userIDFromJWT(r)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Parse the JSON `http.Request` now read into `data`
+	var reqBody struct {
+		Assertion string `json:"assertion"`
+	}
+
+	err = json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Get a `webauthnUser` for the `userID`
+	wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUserID(userID))
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Load the session data
+	sessionData, err := sessionStore.GetWebauthnSession("authentication", r)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Verify the transaction authentication text
+	var verifyTxAuthSimple protocol.ExtensionsVerifier = func(_, clientDataExtensions protocol.AuthenticationExtensions) error {
+		expectedExtensions := protocol.AuthenticationExtensions{
+			"txAuthSimple": fmt.Sprintf("Confirm disable webauthn for %v", wuser.WebAuthnName()),
+		}
+
+		if !reflect.DeepEqual(expectedExtensions, clientDataExtensions) {
+			return fmt.Errorf("Extensions verification failed: Expected %v, Received %v",
+				expectedExtensions,
+				clientDataExtensions)
+		}
+
+		// Success!
+		return nil
+	}
+
+	// TODO: In an actual implementation, we should perform additional checks on
+	// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
+	// and then increment the credentials counter
+	_, err = webauthnAPI.FinishLogin(wuser, sessionData, verifyTxAuthSimple, reqBody.Assertion)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Save the `credential` to the database
+	db.WebauthnStore.Delete(wuser.WebAuthnName())
+
+	// Success!
+	w.WriteHeader(http.StatusOK)
+}
+
 // TODO: There is a lot of opportunity to condense this code into common functions
 // Can the front end just set the `username` to something garbled -> isEnabled = false, vioala!
 func (proxy *WebauthnFirewall) deleteComment(w http.ResponseWriter, r *http.Request) {
@@ -546,10 +560,6 @@ func (proxy *WebauthnFirewall) deleteComment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	log.Info("ADDED ME %v", userID)
-	// ADDED
-	return
-
 	// Get the `data` from the `http.Request` so that it can be restored again if necessary
 	data, err := ioutil.ReadAll(r.Body)
 	if err != nil {
@@ -560,7 +570,6 @@ func (proxy *WebauthnFirewall) deleteComment(w http.ResponseWriter, r *http.Requ
 
 	// Parse the JSON `http.Request` now read into `data`
 	var reqBody struct {
-		Username  string `json:"username"`
 		Assertion string `json:"assertion"`
 	}
 
@@ -572,12 +581,12 @@ func (proxy *WebauthnFirewall) deleteComment(w http.ResponseWriter, r *http.Requ
 	}
 
 	// See if the user has webauthn enabled
-	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUsername(reqBody.Username))
+	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUserID(userID))
 
 	// Perform a webauthn check if webauthn is enabled for this user
 	if isEnabled {
 		// Get a `webauthnUser` for the requested username
-		wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUsername(reqBody.Username))
+		wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUserID(userID))
 		if err != nil {
 			log.Error("%v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)

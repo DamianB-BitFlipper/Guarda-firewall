@@ -18,8 +18,8 @@ type WebauthnEntry struct {
 	CreatedUnix int64
 
 	// Webauthn entries
-	PubKey    []byte `gorm:"type:varchar(65);unique"`
-	CredID    []byte `gorm:"type:varchar(250);unique"`
+	PubKey    []byte `gorm:"unique_index;type:varchar(65)"`
+	CredID    []byte `gorm:"unique_index;type:varchar(250)"`
 	SignCount uint32 `gorm:"default:0"`
 	RPID      string `gorm:"column:rp_id;type:varchar(253)"`
 }
@@ -46,17 +46,17 @@ type webauthnStore struct {
 	*gorm.DB
 }
 
-type webauthnQuery func(*webauthnStore) *gorm.DB
+type WebauthnQuery func(*webauthnStore) *gorm.DB
 
 var WebauthnStore *webauthnStore
 
-func QueryByUserID(userID int64) webauthnQuery {
+func QueryByUserID(userID int64) WebauthnQuery {
 	return func(db *webauthnStore) *gorm.DB {
 		return db.Model(new(WebauthnEntry)).Where("user_id = ?", userID)
 	}
 }
 
-func QueryByUsername(username string) webauthnQuery {
+func QueryByUsername(username string) WebauthnQuery {
 	return func(db *webauthnStore) *gorm.DB {
 		return db.Model(new(WebauthnEntry)).Where("username = ?", username)
 	}
@@ -83,7 +83,7 @@ func (db *webauthnStore) Delete(username string) (err error) {
 	return
 }
 
-func (db *webauthnStore) numCredentials(query webauthnQuery) int64 {
+func (db *webauthnStore) numCredentials(query WebauthnQuery) int64 {
 	var count int64
 	err := query(db).Count(&count).Error
 	if err != nil {
@@ -93,7 +93,7 @@ func (db *webauthnStore) numCredentials(query webauthnQuery) int64 {
 	return count
 }
 
-func (db *webauthnStore) getCredentials(query webauthnQuery) (*WebauthnEntry, error) {
+func (db *webauthnStore) getCredentials(query WebauthnQuery) (*WebauthnEntry, error) {
 	ncreds := db.numCredentials(query)
 	if ncreds == 0 {
 		return nil, nil
@@ -110,12 +110,12 @@ func (db *webauthnStore) getCredentials(query webauthnQuery) (*WebauthnEntry, er
 	return entry, nil
 }
 
-func (db *webauthnStore) IsUserEnabled(query webauthnQuery) bool {
+func (db *webauthnStore) IsUserEnabled(query WebauthnQuery) bool {
 	return db.numCredentials(query) > 0
 }
 
-func (db *webauthnStore) GetWebauthnUser(query webauthnQuery) (webauthnUser, error) {
-	// Get the webauthn entry corresponding to the input `webauthnQuery`
+func (db *webauthnStore) GetWebauthnUser(query WebauthnQuery) (webauthnUser, error) {
+	// Get the webauthn entry corresponding to the input `WebauthnQuery`
 	entry, err := WebauthnStore.getCredentials(query)
 	if entry == nil || err != nil {
 		return webauthnUser{}, err
