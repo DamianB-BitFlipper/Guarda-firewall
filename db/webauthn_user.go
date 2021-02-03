@@ -16,13 +16,18 @@ type webauthnUser struct {
 // Make sure `webauthnUser` implements the `webauthn.User` interface
 var _ webauthn.User = webauthnUser{}
 
+func NewWebauthnUser(userID int64, username string, credentials []webauthn.Credential) webauthnUser {
+	w := webauthnUser{
+		userID:      userID,
+		username:    username,
+		credentials: credentials,
+	}
+	return w
+}
+
 func (w webauthnUser) WebAuthnID() []byte {
 	buf := make([]byte, binary.MaxVarintLen64)
-
-	// This application does not keep track of `userID`s,
-	// accessing occurs via `username`
-	binary.PutUvarint(buf, uint64(0))
-
+	binary.PutUvarint(buf, uint64(w.userID))
 	return buf
 }
 

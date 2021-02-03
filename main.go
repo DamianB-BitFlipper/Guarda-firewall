@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
 	log "unknwon.dev/clog/v2"
 
@@ -43,6 +44,26 @@ var (
 
 func logRequest(r *http.Request) {
 	log.Info("%s:\t%s", r.Method, r.URL)
+}
+
+func userIDFromJWT(r *http.Request) (int64, error) {
+	// The `tokenString` is the second part after the space in the `authorizationString`
+	authorizationString := r.Header.Get("Authorization")
+	tokenString := strings.Split(authorizationString, " ")[1]
+
+	// Parse the JWT token
+	token, _, err := new(jwt.Parser).ParseUnverified(tokenString, jwt.MapClaims{})
+	if err != nil {
+		return 0, err
+	}
+
+	// Extract the `userID` from the JWT token
+	userID, ok := token.Claims.(jwt.MapClaims)["id"].(float64)
+	if !ok {
+		return 0, fmt.Errorf("Unable to decode userID from JWT token")
+	}
+
+	return int64(userID), nil
 }
 
 type WebauthnFirewall struct {
@@ -94,7 +115,7 @@ func (proxy *WebauthnFirewall) proxyRequest(w http.ResponseWriter, r *http.Reque
 	proxy.ServeHTTP(w, r)
 }
 
-func (proxy *WebauthnFirewall) optionsHandler(allowMethods ...string) func(w http.ResponseWriter, r *http.Request) {
+func (proxy *WebauthnFirewall) optionsHandler(allowMethods ...string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if verbose {
 			logRequest(r)
@@ -119,7 +140,7 @@ func (proxy *WebauthnFirewall) webauthnIsEnabled(w http.ResponseWriter, r *http.
 	vars := mux.Vars(r)
 	username := vars["user"]
 
-	isEnabled := db.WebauthnStore.IsUserEnabled(username)
+	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUsername(username))
 
 	// Marshal a response `webauthn_is_enabled` field
 	json_response, err := json.Marshal(map[string]bool{"webauthn_is_enabled": isEnabled})
@@ -141,25 +162,28 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	// Parse the JSON `http.Request`
-	var reqBody struct {
-		Username string `json:"username"`
-	}
-
-	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	// Retrieve the `userID` from the JWT token contained in the `http.Request`
+	userID, err := userIDFromJWT(r)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Get a `webauthnUser` for the requested username
-	wuser, err := db.WebauthnStore.GetWebauthnUser(reqBody.Username)
+	// Parse the JSON `http.Request` for the `Username`
+	var reqBody struct {
+		Username string `json:"username"`
+	}
+
+	err = json.NewDecoder(r.Body).Decode(&reqBody)
 	if err != nil {
 		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Create a new `webauthnUser` struct from the input details
+	wuser := db.NewWebauthnUser(userID, reqBody.Username, nil)
 
 	// TODO
 	// registerOptions := func(credCreationOpts *protocol.PublicKeyCredentialCreationOptions) {
@@ -205,26 +229,29 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	// Parse the JSON `http.Request`
-	var reqBody struct {
-		Username  string `json:"username"`
-		Assertion string `json:"assertion"`
-	}
-
-	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	// Retrieve the `userID` from the JWT token contained in the `http.Request`
+	userID, err := userIDFromJWT(r)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Get a `webauthnUser` for the requested username
-	wuser, err := db.WebauthnStore.GetWebauthnUser(reqBody.Username)
+	// Parse the JSON `http.Request`
+	var reqBody struct {
+		Username  string `json:"username"`
+		Assertion string `json:"assertion"`
+	}
+
+	err = json.NewDecoder(r.Body).Decode(&reqBody)
 	if err != nil {
 		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Create a new `webauthnUser` struct from the input details
+	wuser := db.NewWebauthnUser(userID, reqBody.Username, nil)
 
 	// Load the session data
 	sessionData, err := sessionStore.GetWebauthnSession("registration", r)
@@ -242,7 +269,7 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 	}
 
 	// Save the `credential` to the database
-	db.WebauthnStore.Create(wuser.WebAuthnName(), *credential)
+	db.WebauthnStore.Create(wuser, credential)
 
 	// Success!
 	w.WriteHeader(http.StatusOK)
@@ -258,7 +285,7 @@ func (proxy *WebauthnFirewall) beginAttestation_base(
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 	// See if the user has webauthn enabled
-	isEnabled := db.WebauthnStore.IsUserEnabled(username)
+	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUsername(username))
 
 	// Do nothing if the user does not have webauthn enabled
 	if !isEnabled {
@@ -267,7 +294,7 @@ func (proxy *WebauthnFirewall) beginAttestation_base(
 	}
 
 	// Get a `webauthnUser` for the requested username
-	wuser, err := db.WebauthnStore.GetWebauthnUser(username)
+	wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUsername(username))
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -374,7 +401,7 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 	}
 
 	// Get a `webauthnUser` for the requested username
-	wuser, err := db.WebauthnStore.GetWebauthnUser(reqBody.Username)
+	wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUsername(reqBody.Username))
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -455,12 +482,12 @@ func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Reques
 	}
 
 	// See if the user has webauthn enabled
-	isEnabled := db.WebauthnStore.IsUserEnabled(reqBody.User.Username)
+	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUsername(reqBody.User.Username))
 
 	// Perform a webauthn check if webauthn is enabled for this user
 	if isEnabled {
 		// Get a `webauthnUser` for the requested username
-		wuser, err := db.WebauthnStore.GetWebauthnUser(reqBody.User.Username)
+		wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUsername(reqBody.User.Username))
 		if err != nil {
 			log.Error("%v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -511,6 +538,18 @@ func (proxy *WebauthnFirewall) deleteComment(w http.ResponseWriter, r *http.Requ
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
+	// Retrieve the `userID` from the JWT token contained in the `http.Request`
+	userID, err := userIDFromJWT(r)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Info("ADDED ME %v", userID)
+	// ADDED
+	return
+
 	// Get the `data` from the `http.Request` so that it can be restored again if necessary
 	data, err := ioutil.ReadAll(r.Body)
 	if err != nil {
@@ -533,12 +572,12 @@ func (proxy *WebauthnFirewall) deleteComment(w http.ResponseWriter, r *http.Requ
 	}
 
 	// See if the user has webauthn enabled
-	isEnabled := db.WebauthnStore.IsUserEnabled(reqBody.Username)
+	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUsername(reqBody.Username))
 
 	// Perform a webauthn check if webauthn is enabled for this user
 	if isEnabled {
 		// Get a `webauthnUser` for the requested username
-		wuser, err := db.WebauthnStore.GetWebauthnUser(reqBody.Username)
+		wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUsername(reqBody.Username))
 		if err != nil {
 			log.Error("%v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)

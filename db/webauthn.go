@@ -12,6 +12,7 @@ import (
 type WebauthnEntry struct {
 	gorm.Model
 	// Metadata entries
+	UserID      int64     `gorm:"unique_index;not null"`
 	Username    string    `gorm:"unique_index;not null"`
 	Created     time.Time `gorm:"-"`
 	CreatedUnix int64
@@ -45,11 +46,26 @@ type webauthnStore struct {
 	*gorm.DB
 }
 
+type webauthnQuery func(*webauthnStore) *gorm.DB
+
 var WebauthnStore *webauthnStore
 
-func (db *webauthnStore) Create(username string, credential webauthn.Credential) error {
+func QueryByUserID(userID int64) webauthnQuery {
+	return func(db *webauthnStore) *gorm.DB {
+		return db.Model(new(WebauthnEntry)).Where("user_id = ?", userID)
+	}
+}
+
+func QueryByUsername(username string) webauthnQuery {
+	return func(db *webauthnStore) *gorm.DB {
+		return db.Model(new(WebauthnEntry)).Where("username = ?", username)
+	}
+}
+
+func (db *webauthnStore) Create(wuser webauthnUser, credential *webauthn.Credential) error {
 	wentry := &WebauthnEntry{
-		Username:  username,
+		UserID:    wuser.userID,
+		Username:  wuser.username,
 		PubKey:    credential.PublicKey,
 		CredID:    credential.ID,
 		SignCount: credential.Authenticator.SignCount,
@@ -67,52 +83,46 @@ func (db *webauthnStore) Delete(username string) (err error) {
 	return
 }
 
-func (db *webauthnStore) numCredentials(username string) (count int64) {
-	err := db.Model(new(WebauthnEntry)).Where("username = ?", username).Count(&count).Error
+func (db *webauthnStore) numCredentials(query webauthnQuery) int64 {
+	var count int64
+	err := query(db).Count(&count).Error
 	if err != nil {
-		log.Error("Failed to count webauthn entries [username: %d]: %v", username, err)
+		log.Error("Failed to count webauthn entries: %v", err)
 		return 0
 	}
-	return
+	return count
 }
 
-func (db *webauthnStore) getCredentials(username string) (*WebauthnEntry, error) {
-	ncreds := db.numCredentials(username)
+func (db *webauthnStore) getCredentials(query webauthnQuery) (*WebauthnEntry, error) {
+	ncreds := db.numCredentials(query)
 	if ncreds == 0 {
 		return nil, nil
 	}
 
 	entry := new(WebauthnEntry)
 
-	err := db.Model(new(WebauthnEntry)).Where("username = ?", username).First(&entry).Error
+	err := query(db).First(&entry).Error
 	if err != nil {
-		log.Error("Failed to get webauthn entries [username: %d]: %v", username, err)
+		log.Error("Failed to get webauthn entries: %v", err)
 		return nil, err
 	}
 
 	return entry, nil
 }
 
-func (db *webauthnStore) IsUserEnabled(username string) bool {
-	return db.numCredentials(username) > 0
+func (db *webauthnStore) IsUserEnabled(query webauthnQuery) bool {
+	return db.numCredentials(query) > 0
 }
 
-func (db *webauthnStore) GetWebauthnUser(username string) (webauthnUser, error) {
-	// Get the webauthn entry corresponding to the input `username`
-	entry, err := WebauthnStore.getCredentials(username)
-	if err != nil {
+func (db *webauthnStore) GetWebauthnUser(query webauthnQuery) (webauthnUser, error) {
+	// Get the webauthn entry corresponding to the input `webauthnQuery`
+	entry, err := WebauthnStore.getCredentials(query)
+	if entry == nil || err != nil {
 		return webauthnUser{}, err
 	}
 
-	w := webauthnUser{
-		username:    username,
-		credentials: nil,
-	}
-
-	// If there is not a webauthn credential yet, return as is
-	if entry == nil {
-		return w, nil
-	}
+	// Create a new `webauthnUser`
+	w := NewWebauthnUser(entry.UserID, entry.Username, nil)
 
 	// Rebuild the `credential` from the `entry`
 	var credential webauthn.Credential

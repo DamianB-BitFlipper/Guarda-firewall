@@ -1,0 +1,3 @@
+* Notes
+ - The username passed to the firewall should be used by the service for permission checks of the operation. Otherwise, a username may be supplied that does not have webauthn and the point of the firewall is bypassed
+   - This opens the case where the username is not what determines the permission on the service.

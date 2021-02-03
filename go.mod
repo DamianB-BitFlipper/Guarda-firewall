@@ -4,7 +4,7 @@ go 1.14
 
 require (
 	github.com/cloudflare/cfssl v1.5.0 // indirect
-	github.com/dgrijalva/jwt-go v3.2.0+incompatible // indirect
+	github.com/dgrijalva/jwt-go v3.2.0+incompatible
 	github.com/duo-labs/webauthn.io v0.0.0-20200929144140-c031a3e0f95d
 	github.com/fxamacker/cbor/v2 v2.2.0 // indirect
 	github.com/gorilla/mux v1.8.0
