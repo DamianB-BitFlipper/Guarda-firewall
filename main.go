@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -25,7 +26,7 @@ import (
 
 const (
 	frontendPort     int = 4100
-	backendPort      int = 8080
+	backendPort      int = 3000
 	reverseProxyPort int = 8081
 
 	ENV_SESSION_KEY string = "SESSION_KEY"
@@ -35,7 +36,7 @@ const (
 
 var (
 	frontendAddress     string = fmt.Sprintf("https://localhost:%d", frontendPort)
-	backendAddress      string = fmt.Sprintf("http://localhost:%d", backendPort)
+	backendAddress      string = fmt.Sprintf("https://localhost:%d", backendPort)
 	reverseProxyAddress string = fmt.Sprintf("localhost:%d", reverseProxyPort)
 
 	webauthnAPI  *webauthn.WebAuthn
@@ -72,27 +73,14 @@ type WebauthnFirewall struct {
 
 func NewWebauthnFirewall() *WebauthnFirewall {
 	origin, _ := url.Parse(backendAddress)
-
-	director := func(req *http.Request) {
-		req.Header.Add("X-Forwarded-Host", req.Host)
-		req.Header.Add("X-Origin-Host", origin.Host)
-		req.URL.Scheme = "http"
-		req.URL.Host = origin.Host
-	}
-
-	proxyModifyResponse := func(r *http.Response) error {
-		// Change the access control origin for all responses
-		// coming back from the reverse proxy server
-		r.Header.Set("Access-Control-Allow-Origin", frontendAddress)
-		return nil
+	proxy := httputil.NewSingleHostReverseProxy(origin)
+	proxy.Transport = &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 
 	// Construct and return the webauthn firewall
 	return &WebauthnFirewall{
-		&httputil.ReverseProxy{
-			Director:       director,
-			ModifyResponse: proxyModifyResponse,
-		},
+		proxy,
 	}
 }
 
@@ -651,38 +639,7 @@ func main() {
 	r := mux.NewRouter()
 
 	// Proxy routes
-	r.HandleFunc("/api/user", wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST", "PUT")
-	r.HandleFunc("/api/tags", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
-	r.HandleFunc("/api/profiles/{user}", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
-	r.HandleFunc("/api/articles/feed", wfirewall.proxyRequest).Methods("OPTIONS", "GET")
-	r.HandleFunc("/api/articles", wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST")
-	r.HandleFunc("/api/articles/{slug}", wfirewall.proxyRequest).Methods("OPTIONS", "GET", "DELETE")
-	r.HandleFunc("/api/articles/{slug}/comments", wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST")
-
-	// Webauthn and other intercepted routes
-	r.HandleFunc("/api/webauthn/is_enabled/{user}", wfirewall.optionsHandler("GET")).Methods("OPTIONS")
-	r.HandleFunc("/api/webauthn/is_enabled/{user}", wfirewall.webauthnIsEnabled).Methods("GET")
-
-	r.HandleFunc("/api/webauthn/begin_register", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
-	r.HandleFunc("/api/webauthn/begin_register", wfirewall.beginRegister).Methods("POST")
-
-	r.HandleFunc("/api/webauthn/finish_register", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
-	r.HandleFunc("/api/webauthn/finish_register", wfirewall.finishRegister).Methods("POST")
-
-	r.HandleFunc("/api/webauthn/begin_login", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
-	r.HandleFunc("/api/webauthn/begin_login", wfirewall.beginLogin).Methods("POST")
-
-	r.HandleFunc("/api/users/login", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
-	r.HandleFunc("/api/users/login", wfirewall.finishLogin).Methods("POST")
-
-	r.HandleFunc("/api/webauthn/begin_attestation", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
-	r.HandleFunc("/api/webauthn/begin_attestation", wfirewall.beginAttestation).Methods("POST")
-
-	r.HandleFunc("/api/webauthn/disable", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
-	r.HandleFunc("/api/webauthn/disable", wfirewall.disableWebauthn).Methods("POST")
-
-	r.HandleFunc("/api/articles/{slug}/comments/{comment_id}", wfirewall.optionsHandler("DELETE")).Methods("OPTIONS")
-	r.HandleFunc("/api/articles/{slug}/comments/{comment_id}", wfirewall.deleteComment).Methods("DELETE")
+	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET")
 
 	// Start up the server
 	log.Info("Starting up server on port: %d", reverseProxyPort)

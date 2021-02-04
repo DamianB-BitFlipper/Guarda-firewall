@@ -1,3 +1,5 @@
 * Notes
  - The username passed to the firewall should be used by the service for permission checks of the operation. Otherwise, a username may be supplied that does not have webauthn and the point of the firewall is bypassed
    - This opens the case where the username is not what determines the permission on the service.
+- Firewall in between the frontend and backend uses http. Firewall as the frontend should use https
+- Firewall might need to configure proxy transport verify TLS certificate or not
