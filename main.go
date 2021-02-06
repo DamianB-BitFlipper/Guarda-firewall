@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	frontendPort     int = 4100
+	frontendPort     int = 8081
 	backendPort      int = 3000
 	reverseProxyPort int = 8081
 
@@ -222,21 +222,14 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	// Retrieve the `userID` from the JWT token contained in the `http.Request`
-	userID, err := userIDFromJWT(r)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	// Parse the JSON `http.Request`
 	var reqBody struct {
-		Username  string `json:"username"`
-		Assertion string `json:"assertion"`
+		Username    string `json:"username"`
+		UserID      int64  `json:"userID,string"`
+		Credentials string `json:"credentials"`
 	}
 
-	err = json.NewDecoder(r.Body).Decode(&reqBody)
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -244,7 +237,7 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 	}
 
 	// Create a new `webauthnUser` struct from the input details
-	wuser := db.NewWebauthnUser(userID, reqBody.Username, nil)
+	wuser := db.NewWebauthnUser(reqBody.UserID, reqBody.Username, nil)
 
 	// Load the session data
 	sessionData, err := sessionStore.GetWebauthnSession("registration", r)
@@ -254,10 +247,18 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	credential, err := webauthnAPI.FinishRegistration(wuser, sessionData, reqBody.Assertion)
+	credential, err := webauthnAPI.FinishRegistration(wuser, sessionData, reqBody.Credentials)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Marshal a response `redirectTo` field to reload the page
+	json_response, err := json.Marshal(map[string]string{"redirectTo": ""})
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -266,6 +267,7 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 
 	// Success!
 	w.WriteHeader(http.StatusOK)
+	w.Write(json_response)
 }
 
 // TODO: They way errors are handled on the front end are slightly different
@@ -646,6 +648,7 @@ func main() {
 	// Proxy routes
 	r.HandleFunc("/webauthn/is_enabled/{user}", wfirewall.webauthnIsEnabled).Methods("GET")
 	r.HandleFunc("/webauthn/begin_register", wfirewall.beginRegister).Methods("POST")
+	r.HandleFunc("/webauthn/finish_register", wfirewall.finishRegister).Methods("POST")
 
 	// Catch all other requests and simply proxy them onward
 	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
