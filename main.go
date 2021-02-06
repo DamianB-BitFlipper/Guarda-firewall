@@ -47,6 +47,18 @@ func logRequest(r *http.Request) {
 	log.Info("%s:\t%s", r.Method, r.URL)
 }
 
+func printRequestContents(r *http.Request) error {
+	// Save a copy of this request for debugging.
+	requestDump, err := httputil.DumpRequest(r, true)
+	if err != nil {
+		return err
+	}
+	log.Info(string(requestDump))
+
+	// Success!
+	return nil
+}
+
 func userIDFromJWT(r *http.Request) (int64, error) {
 	// The `tokenString` is the second part after the space in the `authorizationString`
 	authorizationString := r.Header.Get("Authorization")
@@ -150,20 +162,13 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	// Retrieve the `userID` from the JWT token contained in the `http.Request`
-	userID, err := userIDFromJWT(r)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	// Parse the JSON `http.Request` for the `Username`
 	var reqBody struct {
 		Username string `json:"username"`
+		UserID   int64  `json:"userID,string"`
 	}
 
-	err = json.NewDecoder(r.Body).Decode(&reqBody)
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -171,7 +176,7 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Create a new `webauthnUser` struct from the input details
-	wuser := db.NewWebauthnUser(userID, reqBody.Username, nil)
+	wuser := db.NewWebauthnUser(reqBody.UserID, reqBody.Username, nil)
 
 	// TODO
 	// registerOptions := func(credCreationOpts *protocol.PublicKeyCredentialCreationOptions) {
@@ -639,13 +644,17 @@ func main() {
 	r := mux.NewRouter()
 
 	// Proxy routes
-	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET")
+	r.HandleFunc("/webauthn/is_enabled/{user}", wfirewall.webauthnIsEnabled).Methods("GET")
+	r.HandleFunc("/webauthn/begin_register", wfirewall.beginRegister).Methods("POST")
+
+	// Catch all other requests and simply proxy them onward
+	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
 
 	// Start up the server
 	log.Info("Starting up server on port: %d", reverseProxyPort)
 	log.Info("Forwarding HTTP: %d -> %d", reverseProxyPort, backendPort)
 
-	log.Fatal("%v", http.ListenAndServe(reverseProxyAddress, r))
+	log.Fatal("%v", http.ListenAndServeTLS(reverseProxyAddress, "server.crt", "server.key", r))
 
 	// Graceful stopping all loggers before exiting the program.
 	log.Stop()

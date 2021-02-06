@@ -3,3 +3,5 @@
    - This opens the case where the username is not what determines the permission on the service.
 - Firewall in between the frontend and backend uses http. Firewall as the frontend should use https
 - Firewall might need to configure proxy transport verify TLS certificate or not
+- Some web-services want OPTIONS such as conduit, gogs for example does not
+- Firewall identifier different between services, JWT, username directly, etc.
