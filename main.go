@@ -334,20 +334,13 @@ func (proxy *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *http.R
 	// Call the proxy preamble
 	proxy.preamble(w, r)
 
-	// Retrieve the `userID` from the JWT token contained in the `http.Request`
-	userID, err := userIDFromJWT(r)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	// Parse the JSON `http.Request`
 	var reqBody struct {
+		Username           string `json:"username"`
 		AuthenticationText string `json:"auth_text"`
 	}
 
-	err = json.NewDecoder(r.Body).Decode(&reqBody)
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -358,7 +351,7 @@ func (proxy *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *http.R
 	extensions := make(protocol.AuthenticationExtensions)
 	extensions["txAuthSimple"] = reqBody.AuthenticationText
 
-	proxy.beginAttestation_base(db.QueryByUserID(userID), extensions, w, r)
+	proxy.beginAttestation_base(db.QueryByUsername(reqBody.Username), extensions, w, r)
 	return
 }
 
@@ -443,20 +436,15 @@ func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	// Before proxying the response onward, restore the `r.Body` field,
-	// but the body contents will be stored in a form-data
+	// Before proxying the response onward, but the contents as a form-data
 	data := url.Values{}
 	data.Set("_csrf", reqBody.CSRF)
 	data.Set("user_name", reqBody.Username)
 	data.Set("password", reqBody.Password)
 
-	// TODO: This is super hard-coded
-	r, _ = http.NewRequest("POST", "/user/login", strings.NewReader(data.Encode()))
+	// Construct this new request to proxy onward
+	r, _ = http.NewRequest(r.Method, r.URL.String(), strings.NewReader(data.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	// r.Body = ioutil.NopCloser(strings.NewReader(data.Encode()))
-	// r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// r.Header.Set("Content-Length", "98") // TODO: This is a hack!
 
 	// Once the webauthn check passed, pass the request onward to
 	// the server to check the username and password
@@ -471,20 +459,13 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	// Retrieve the `userID` from the JWT token contained in the `http.Request`
-	userID, err := userIDFromJWT(r)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	// Parse the JSON `http.Request` now read into `data`
 	var reqBody struct {
+		Username  string `json:"username"`
 		Assertion string `json:"assertion"`
 	}
 
-	err = json.NewDecoder(r.Body).Decode(&reqBody)
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -492,7 +473,7 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 	}
 
 	// Get a `webauthnUser` for the `userID`
-	wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUserID(userID))
+	wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUsername(reqBody.Username))
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -533,11 +514,20 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Marshal a response `redirectTo` field to reload the page
+	json_response, err := json.Marshal(map[string]string{"redirectTo": ""})
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	// Save the `credential` to the database
 	db.WebauthnStore.Delete(wuser.WebAuthnName())
 
 	// Success!
 	w.WriteHeader(http.StatusOK)
+	w.Write(json_response)
 }
 
 // TODO: There is a lot of opportunity to condense this code into common functions
@@ -656,7 +646,11 @@ func main() {
 	r.HandleFunc("/webauthn/finish_register", wfirewall.finishRegister).Methods("POST")
 
 	r.HandleFunc("/webauthn/begin_login", wfirewall.beginLogin).Methods("POST")
-	r.HandleFunc("/webauthn/finish_login", wfirewall.finishLogin).Methods("POST")
+	r.HandleFunc("/user/login", wfirewall.finishLogin).Methods("POST")
+
+	r.HandleFunc("/webauthn/begin_attestation", wfirewall.beginAttestation).Methods("POST")
+
+	r.HandleFunc("/webauthn/disable", wfirewall.disableWebauthn).Methods("POST")
 
 	// Catch all other requests and simply proxy them onward
 	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
