@@ -19,6 +19,8 @@ import (
 	log "unknwon.dev/clog/v2"
 
 	"github.com/JSmith-BitFlipper/webauthn-firewall-proxy/db"
+	"github.com/JSmith-BitFlipper/webauthn-firewall-proxy/tool"
+
 	"webauthn/protocol"
 	"webauthn/webauthn"
 	"webauthn_utils/session"
@@ -76,7 +78,39 @@ func userIDFromJWT(r *http.Request) (int64, error) {
 		return 0, fmt.Errorf("Unable to decode userID from JWT token")
 	}
 
+	// Success!
 	return int64(userID), nil
+}
+
+func userIDFromSession(r *http.Request) (int64, error) {
+	// Get the UserID associated with the sessionID in the cookies. This is to assure that the
+	// server and the firewall are referencing the same user during the webauthn check
+	url := fmt.Sprintf("%s/user/session2user", backendAddress)
+	userIDReq, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+
+	// Pass on the cookies from `r` to `userIDReq`, which will include the cookie with the `sessionID`
+	for _, cookie := range r.Cookies() {
+		userIDReq.AddCookie(cookie)
+	}
+
+	var sessionInfo struct {
+		Ok     bool  `json:"ok"`
+		UserID int64 `json:"uid"`
+	}
+	err = tool.PerformHTTP_RequestJSON(userIDReq, &sessionInfo)
+	if err != nil {
+		return 0, err
+	}
+
+	if !sessionInfo.Ok {
+		return 0, fmt.Errorf("Unable to retrieve the userID for this cookie session")
+	}
+
+	// Success!
+	return sessionInfo.UserID, nil
 }
 
 type WebauthnFirewall struct {
@@ -459,13 +493,19 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
+	userID, err := userIDFromSession(r)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	// Parse the JSON `http.Request` now read into `data`
 	var reqBody struct {
-		Username  string `json:"username"`
 		Assertion string `json:"assertion"`
 	}
 
-	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	err = json.NewDecoder(r.Body).Decode(&reqBody)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -473,7 +513,7 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 	}
 
 	// Get a `webauthnUser` for the `userID`
-	wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUsername(reqBody.Username))
+	wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUserID(userID))
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -532,7 +572,7 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 
 // TODO: There is a lot of opportunity to condense this code into common functions
 // Can the front end just set the `username` to something garbled -> isEnabled = false, vioala!
-func (proxy *WebauthnFirewall) deleteComment(w http.ResponseWriter, r *http.Request) {
+func (proxy *WebauthnFirewall) deleteRepository(w http.ResponseWriter, r *http.Request) {
 	// Print the HTTP request if verbosity is on
 	if verbose {
 		logRequest(r)
