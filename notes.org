@@ -4,6 +4,7 @@
 - Firewall in between the frontend and backend uses http. Firewall as the frontend should use https
 - Firewall might need to configure proxy transport verify TLS certificate or not
 - Some web-services want OPTIONS such as conduit, gogs for example does not
-- Firewall identifier different between services, JWT, username directly, etc.
+- Firewall identifier different between services, JWT, session, username directly, etc.
 - Login does not work if it accepts email, but firewall does not store email, only username and userID
 - Firewall `reqBody` JSON field names may need to be configurable.
+- Incoming data may be JSON format of request body or form data

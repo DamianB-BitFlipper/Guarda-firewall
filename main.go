@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/dgrijalva/jwt-go"
@@ -196,13 +197,16 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	// Parse the JSON `http.Request` for the `Username`
-	var reqBody struct {
-		Username string `json:"username"`
-		UserID   int64  `json:"userID,string"`
+	// Parse the form-data to retrieve the `http.Request` information
+	username := r.FormValue("username")
+	if username == "" {
+		errText := "Invalid form-data parameters"
+		log.Error("%v", errText)
+		http.Error(w, errText, http.StatusInternalServerError)
+		return
 	}
 
-	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	userID, err := strconv.ParseInt(r.FormValue("userID"), 10, 64)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -210,7 +214,7 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Create a new `webauthnUser` struct from the input details
-	wuser := db.NewWebauthnUser(reqBody.UserID, reqBody.Username, nil)
+	wuser := db.NewWebauthnUser(userID, username, nil)
 
 	// TODO
 	// registerOptions := func(credCreationOpts *protocol.PublicKeyCredentialCreationOptions) {
@@ -256,14 +260,17 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	// Parse the JSON `http.Request`
-	var reqBody struct {
-		Username    string `json:"username"`
-		UserID      int64  `json:"userID,string"`
-		Credentials string `json:"credentials"`
+	// Parse the form-data to retrieve the `http.Request` information
+	username := r.FormValue("username")
+	credentials := r.FormValue("credentials")
+	if username == "" || credentials == "" {
+		errText := "Invalid form-data parameters"
+		log.Error("%v", errText)
+		http.Error(w, errText, http.StatusInternalServerError)
+		return
 	}
 
-	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	userID, err := strconv.ParseInt(r.FormValue("userID"), 10, 64)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -271,7 +278,7 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 	}
 
 	// Create a new `webauthnUser` struct from the input details
-	wuser := db.NewWebauthnUser(reqBody.UserID, reqBody.Username, nil)
+	wuser := db.NewWebauthnUser(userID, username, nil)
 
 	// Load the session data
 	sessionData, err := sessionStore.GetWebauthnSession("registration", r)
@@ -281,7 +288,7 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	credential, err := webauthnAPI.FinishRegistration(wuser, sessionData, reqBody.Credentials)
+	wcredential, err := webauthnAPI.FinishRegistration(wuser, sessionData, credentials)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -296,8 +303,8 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Save the `credential` to the database
-	db.WebauthnStore.Create(wuser, credential)
+	// Save the `wcredential` to the database
+	db.WebauthnStore.Create(wuser, wcredential)
 
 	// Success!
 	w.WriteHeader(http.StatusOK)
@@ -368,24 +375,21 @@ func (proxy *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *http.R
 	// Call the proxy preamble
 	proxy.preamble(w, r)
 
-	// Parse the JSON `http.Request`
-	var reqBody struct {
-		Username           string `json:"username"`
-		AuthenticationText string `json:"auth_text"`
-	}
-
-	err := json.NewDecoder(r.Body).Decode(&reqBody)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Parse the form-data to retrieve the `http.Request` information
+	username := r.FormValue("username")
+	authenticationText := r.FormValue("auth_text")
+	if username == "" || authenticationText == "" {
+		errText := "Invalid form-data parameters"
+		log.Error("%v", errText)
+		http.Error(w, errText, http.StatusInternalServerError)
 		return
 	}
 
 	// Set the transaction authentication extension
 	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = reqBody.AuthenticationText
+	extensions["txAuthSimple"] = authenticationText
 
-	proxy.beginAttestation_base(db.QueryByUsername(reqBody.Username), extensions, w, r)
+	proxy.beginAttestation_base(db.QueryByUsername(username), extensions, w, r)
 	return
 }
 
@@ -393,19 +397,16 @@ func (proxy *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *http.Request
 	// Call the proxy preamble
 	proxy.preamble(w, r)
 
-	// Parse the JSON `http.Request`
-	var reqBody struct {
-		Username string `json:"user_name"`
-	}
-
-	err := json.NewDecoder(r.Body).Decode(&reqBody)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Parse the form-data to retrieve the `http.Request` information
+	username := r.FormValue("user_name")
+	if username == "" {
+		errText := "Invalid form-data parameters"
+		log.Error("%v", errText)
+		http.Error(w, errText, http.StatusInternalServerError)
 		return
 	}
 
-	proxy.beginAttestation_base(db.QueryByUsername(reqBody.Username), nil, w, r)
+	proxy.beginAttestation_base(db.QueryByUsername(username), nil, w, r)
 	return
 }
 
@@ -418,28 +419,34 @@ func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Reques
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	// Parse the JSON `http.Request` now read into `data`
-	var reqBody struct {
-		CSRF      string `json:"_csrf"`
-		Username  string `json:"user_name"`
-		Password  string `json:"password"`
-		Assertion string `json:"assertion"`
-	}
-
-	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	// Get the `data` from the `http.Request` so that it can be restored again if necessary
+	data, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	// Reload the `r.Body` from the `data` before reading the form fields
+	r.Body = ioutil.NopCloser(bytes.NewReader(data))
+
+	// Parse the form-data to retrieve the `http.Request` information
+	username := r.FormValue("user_name")
+	assertion := r.FormValue("assertion")
+	if username == "" || assertion == "" {
+		errText := "Invalid form-data parameters"
+		log.Error("%v", errText)
+		http.Error(w, errText, http.StatusInternalServerError)
+		return
+	}
+
 	// See if the user has webauthn enabled
-	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUsername(reqBody.Username))
+	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUsername(username))
 
 	// Perform a webauthn check if webauthn is enabled for this user
 	if isEnabled {
 		// Get a `webauthnUser` for the requested username
-		wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUsername(reqBody.Username))
+		wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUsername(username))
 		if err != nil {
 			log.Error("%v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -462,7 +469,7 @@ func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Reques
 		// TODO: In an actual implementation, we should perform additional checks on
 		// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
 		// and then increment the credentials counter
-		_, err = webauthnAPI.FinishLogin(wuser, sessionData, noVerify, reqBody.Assertion)
+		_, err = webauthnAPI.FinishLogin(wuser, sessionData, noVerify, assertion)
 		if err != nil {
 			log.Error("%v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -470,15 +477,8 @@ func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	// Before proxying the response onward, but the contents as a form-data
-	data := url.Values{}
-	data.Set("_csrf", reqBody.CSRF)
-	data.Set("user_name", reqBody.Username)
-	data.Set("password", reqBody.Password)
-
-	// Construct this new request to proxy onward
-	r, _ = http.NewRequest(r.Method, r.URL.String(), strings.NewReader(data.Encode()))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Reload the `r.Body` from the `data` before proxying onward
+	r.Body = ioutil.NopCloser(bytes.NewReader(data))
 
 	// Once the webauthn check passed, pass the request onward to
 	// the server to check the username and password
@@ -493,6 +493,7 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
+	// Retrieve the `userID` associated with the current session
 	userID, err := userIDFromSession(r)
 	if err != nil {
 		log.Error("%v", err)
@@ -500,15 +501,12 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Parse the JSON `http.Request` now read into `data`
-	var reqBody struct {
-		Assertion string `json:"assertion"`
-	}
-
-	err = json.NewDecoder(r.Body).Decode(&reqBody)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Parse the form-data to retrieve the `http.Request` information
+	assertion := r.FormValue("assertion")
+	if assertion == "" {
+		errText := "Invalid form-data parameters"
+		log.Error("%v", errText)
+		http.Error(w, errText, http.StatusInternalServerError)
 		return
 	}
 
@@ -547,7 +545,7 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 	// TODO: In an actual implementation, we should perform additional checks on
 	// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
 	// and then increment the credentials counter
-	_, err = webauthnAPI.FinishLogin(wuser, sessionData, verifyTxAuthSimple, reqBody.Assertion)
+	_, err = webauthnAPI.FinishLogin(wuser, sessionData, verifyTxAuthSimple, assertion)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -581,8 +579,8 @@ func (proxy *WebauthnFirewall) deleteRepository(w http.ResponseWriter, r *http.R
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	// Retrieve the `userID` from the JWT token contained in the `http.Request`
-	userID, err := userIDFromJWT(r)
+	// Retrieve the `userID` associated with the current session
+	userID, err := userIDFromSession(r)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
