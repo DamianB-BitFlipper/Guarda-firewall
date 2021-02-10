@@ -8,3 +8,4 @@
 - Login does not work if it accepts email, but firewall does not store email, only username and userID
 - Firewall `reqBody` JSON field names may need to be configurable.
 - Incoming data may be JSON format of request body or form data
+- Server-side rendering mainly uses URL begin since pre-load would also be an HTTP request, so no point to do so early and unnecessarily

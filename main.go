@@ -375,10 +375,17 @@ func (proxy *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *http.R
 	// Call the proxy preamble
 	proxy.preamble(w, r)
 
+	// Retrieve the `userID` associated with the current session
+	userID, err := userIDFromSession(r)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	// Parse the form-data to retrieve the `http.Request` information
-	username := r.FormValue("username")
 	authenticationText := r.FormValue("auth_text")
-	if username == "" || authenticationText == "" {
+	if authenticationText == "" {
 		errText := "Invalid form-data parameters"
 		log.Error("%v", errText)
 		http.Error(w, errText, http.StatusInternalServerError)
@@ -389,7 +396,7 @@ func (proxy *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *http.R
 	extensions := make(protocol.AuthenticationExtensions)
 	extensions["txAuthSimple"] = authenticationText
 
-	proxy.beginAttestation_base(db.QueryByUsername(username), extensions, w, r)
+	proxy.beginAttestation_base(db.QueryByUserID(userID), extensions, w, r)
 	return
 }
 
@@ -570,12 +577,7 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 
 // TODO: There is a lot of opportunity to condense this code into common functions
 // Can the front end just set the `username` to something garbled -> isEnabled = false, vioala!
-func (proxy *WebauthnFirewall) deleteRepository(w http.ResponseWriter, r *http.Request) {
-	// Print the HTTP request if verbosity is on
-	if verbose {
-		logRequest(r)
-	}
-
+func (proxy *WebauthnFirewall) deleteRepositoryHelper(w http.ResponseWriter, r *http.Request) {
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
@@ -587,25 +589,20 @@ func (proxy *WebauthnFirewall) deleteRepository(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Get the `data` from the `http.Request` so that it can be restored again if necessary
-	data, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Parse the form-data to retrieve the `http.Request` information
+	assertion := r.FormValue("assertion")
+	if assertion == "" {
+		errText := "Invalid form-data parameters"
+		log.Error("%v", errText)
+		http.Error(w, errText, http.StatusInternalServerError)
 		return
 	}
 
-	// Parse the JSON `http.Request` now read into `data`
-	var reqBody struct {
-		Assertion string `json:"assertion"`
-	}
-
-	err = json.NewDecoder(bytes.NewReader(data)).Decode(&reqBody)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// Get the `username` and `reponame` variables passed in the url
+	// used for the transaction string verification
+	vars := mux.Vars(r)
+	username := vars["username"]
+	reponame := vars["reponame"]
 
 	// See if the user has webauthn enabled
 	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUserID(userID))
@@ -631,7 +628,7 @@ func (proxy *WebauthnFirewall) deleteRepository(w http.ResponseWriter, r *http.R
 		// Verify the transaction authentication text
 		var verifyTxAuthSimple protocol.ExtensionsVerifier = func(_, clientDataExtensions protocol.AuthenticationExtensions) error {
 			expectedExtensions := protocol.AuthenticationExtensions{
-				"txAuthSimple": "Confirm comment delete",
+				"txAuthSimple": fmt.Sprintf("Confirm repository delete: %s/%s", username, reponame),
 			}
 
 			if !reflect.DeepEqual(expectedExtensions, clientDataExtensions) {
@@ -647,7 +644,7 @@ func (proxy *WebauthnFirewall) deleteRepository(w http.ResponseWriter, r *http.R
 		// TODO: In an actual implementation, we should perform additional checks on
 		// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
 		// and then increment the credentials counter
-		_, err = webauthnAPI.FinishLogin(wuser, sessionData, verifyTxAuthSimple, reqBody.Assertion)
+		_, err = webauthnAPI.FinishLogin(wuser, sessionData, verifyTxAuthSimple, assertion)
 		if err != nil {
 			log.Error("%v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -655,12 +652,50 @@ func (proxy *WebauthnFirewall) deleteRepository(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Before proxying the response onward, restore the `r.Body` field
-	r.Body = ioutil.NopCloser(bytes.NewReader(data))
-
 	// Once the webauthn check passed, pass the request onward to
 	// the server to check the username and password
 	proxy.ServeHTTP(w, r)
+	return
+}
+
+func (proxy *WebauthnFirewall) repoSettings(w http.ResponseWriter, r *http.Request) {
+	// Print the HTTP request if verbosity is on
+	if verbose {
+		logRequest(r)
+	}
+
+	// Get the `data` from the `http.Request` so that it can be restored again if necessary
+	data, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Reload the `r.Body` from the `data` before reading the form fields
+	r.Body = ioutil.NopCloser(bytes.NewReader(data))
+
+	// Parse the form-data to retrieve the `http.Request` information
+	action := r.FormValue("action")
+	if action == "" {
+		errText := "Invalid form-data parameters"
+		log.Error("%v", errText)
+		http.Error(w, errText, http.StatusInternalServerError)
+		return
+	}
+
+	// Reload the `r.Body` from the `data` before handling onwards
+	r.Body = ioutil.NopCloser(bytes.NewReader(data))
+
+	switch action {
+	case "delete":
+		// Handle deletion separately
+		proxy.deleteRepositoryHelper(w, r)
+	default:
+		// Proxy all other requests
+		proxy.ServeHTTP(w, r)
+	}
+
 	return
 }
 
@@ -689,6 +724,7 @@ func main() {
 	r.HandleFunc("/webauthn/begin_attestation", wfirewall.beginAttestation).Methods("POST")
 
 	r.HandleFunc("/webauthn/disable", wfirewall.disableWebauthn).Methods("POST")
+	r.HandleFunc("/{username}/{reponame}/settings", wfirewall.repoSettings).Methods("POST")
 
 	// Catch all other requests and simply proxy them onward
 	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
