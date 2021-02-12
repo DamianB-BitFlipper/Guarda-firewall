@@ -86,7 +86,7 @@ func userIDFromJWT(r *http.Request) (int64, error) {
 func userIDFromSession(r *http.Request) (int64, error) {
 	// Get the UserID associated with the sessionID in the cookies. This is to assure that the
 	// server and the firewall are referencing the same user during the webauthn check
-	url := fmt.Sprintf("%s/user/session2user", backendAddress)
+	url := fmt.Sprintf("%s/server_context/session2user", backendAddress)
 	userIDReq, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return 0, err
@@ -112,6 +112,40 @@ func userIDFromSession(r *http.Request) (int64, error) {
 
 	// Success!
 	return sessionInfo.UserID, nil
+}
+
+func itemFromItemID(itemType string, id int64, itemStruct interface{}) error {
+	// Construct the URL to retrieve the item from the input item `id`
+	url := fmt.Sprintf("%s/server_context/%s/%d", backendAddress, itemType, id)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	// Perform the `req` and write the JSON output into the `itemStruct` (interface to a pointer)
+	err = tool.PerformHTTP_RequestJSON(req, itemStruct)
+	if err != nil {
+		return err
+	}
+
+	// Success!
+	return nil
+}
+
+type SSHKey struct {
+	Name    string
+	Content string
+}
+
+func sshKeyFromSSHKeyID(sshKeyID int64) (*SSHKey, error) {
+	publicKey := new(SSHKey)
+	err := itemFromItemID("ssh_key", sshKeyID, publicKey)
+	if err != nil {
+		return nil, err
+	}
+
+	// Success!
+	return publicKey, nil
 }
 
 type WebauthnFirewall struct {
@@ -337,7 +371,7 @@ func (proxy *WebauthnFirewall) beginAttestation_base(
 		return
 	}
 
-	// The `clientExtensions` in BeginLogin is now superfluous
+	// TODO: The `clientExtensions` in BeginLogin is now superfluous
 	//
 	// Generate the webauthn `options` and `sessionData`
 	options, sessionData, err := webauthnAPI.BeginLogin(wuser, nil)
@@ -699,6 +733,213 @@ func (proxy *WebauthnFirewall) repoSettings(w http.ResponseWriter, r *http.Reque
 	return
 }
 
+func (proxy *WebauthnFirewall) addSSHKey(w http.ResponseWriter, r *http.Request) {
+	// Print the HTTP request if verbosity is on
+	if verbose {
+		logRequest(r)
+	}
+
+	// Allow transmitting cookies, used by `sessionStore`
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+	// Retrieve the `userID` associated with the current session
+	userID, err := userIDFromSession(r)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Get the `data` from the `http.Request` so that it can be restored again if necessary
+	data, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Reload the `r.Body` from the `data` before reading the form fields
+	r.Body = ioutil.NopCloser(bytes.NewReader(data))
+
+	// Parse the form-data to retrieve the `http.Request` information
+	assertion := r.FormValue("assertion")
+	sshKeyName := r.FormValue("title")
+	if assertion == "" || sshKeyName == "" {
+		errText := "Invalid form-data parameters"
+		log.Error("%v", errText)
+		http.Error(w, errText, http.StatusInternalServerError)
+		return
+	}
+
+	// See if the user has webauthn enabled
+	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUserID(userID))
+
+	// Perform a webauthn check if webauthn is enabled for this user
+	if isEnabled {
+		// Get a `webauthnUser` for the requested username
+		wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUserID(userID))
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Load the session data
+		sessionData, err := sessionStore.GetWebauthnSession("authentication", r)
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Verify the transaction authentication text
+		var verifyTxAuthSimple protocol.ExtensionsVerifier = func(_, clientDataExtensions protocol.AuthenticationExtensions) error {
+			expectedExtensions := protocol.AuthenticationExtensions{
+				"txAuthSimple": fmt.Sprintf("Add SSH key named: %v", sshKeyName),
+			}
+
+			if !reflect.DeepEqual(expectedExtensions, clientDataExtensions) {
+				return fmt.Errorf("Extensions verification failed: Expected %v, Received %v",
+					expectedExtensions,
+					clientDataExtensions)
+			}
+
+			// Success!
+			return nil
+		}
+
+		// TODO: In an actual implementation, we should perform additional checks on
+		// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
+		// and then increment the credentials counter
+		_, err = webauthnAPI.FinishLogin(wuser, sessionData, verifyTxAuthSimple, assertion)
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Reload the `r.Body` from the `data` before proxying onward
+	r.Body = ioutil.NopCloser(bytes.NewReader(data))
+
+	// Once the webauthn check passed, pass the request onward to
+	// the server to check the username and password
+	proxy.ServeHTTP(w, r)
+	return
+}
+
+func (proxy *WebauthnFirewall) deleteSSHKey(w http.ResponseWriter, r *http.Request) {
+	// Print the HTTP request if verbosity is on
+	if verbose {
+		logRequest(r)
+	}
+
+	// Allow transmitting cookies, used by `sessionStore`
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+	// Retrieve the `userID` associated with the current session
+	userID, err := userIDFromSession(r)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Get the `data` from the `http.Request` so that it can be restored again if necessary
+	data, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Reload the `r.Body` from the `data` before reading the form fields
+	r.Body = ioutil.NopCloser(bytes.NewReader(data))
+
+	//
+	// TODO: This code can go inside of the `isEnabled` branch. No need to read `data` if webauthn is not enabled
+	//
+
+	// Parse the form-data to retrieve the `http.Request` information
+	assertion := r.FormValue("assertion")
+	if assertion == "" {
+		errText := "Invalid form-data parameters"
+		log.Error("%v", errText)
+		http.Error(w, errText, http.StatusInternalServerError)
+		return
+	}
+
+	sshKeyID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sshKey, err := sshKeyFromSSHKeyID(sshKeyID)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// See if the user has webauthn enabled
+	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUserID(userID))
+
+	// Perform a webauthn check if webauthn is enabled for this user
+	if isEnabled {
+		// Get a `webauthnUser` for the requested username
+		wuser, err := db.WebauthnStore.GetWebauthnUser(db.QueryByUserID(userID))
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Load the session data
+		sessionData, err := sessionStore.GetWebauthnSession("authentication", r)
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Verify the transaction authentication text
+		var verifyTxAuthSimple protocol.ExtensionsVerifier = func(_, clientDataExtensions protocol.AuthenticationExtensions) error {
+			expectedExtensions := protocol.AuthenticationExtensions{
+				"txAuthSimple": fmt.Sprintf("Delete SSH key named: %v", sshKey.Name),
+			}
+
+			if !reflect.DeepEqual(expectedExtensions, clientDataExtensions) {
+				return fmt.Errorf("Extensions verification failed: Expected %v, Received %v",
+					expectedExtensions,
+					clientDataExtensions)
+			}
+
+			// Success!
+			return nil
+		}
+
+		// TODO: In an actual implementation, we should perform additional checks on
+		// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
+		// and then increment the credentials counter
+		_, err = webauthnAPI.FinishLogin(wuser, sessionData, verifyTxAuthSimple, assertion)
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Reload the `r.Body` from the `data` before proxying onward
+	r.Body = ioutil.NopCloser(bytes.NewReader(data))
+
+	// Once the webauthn check passed, pass the request onward to
+	// the server to check the username and password
+	proxy.ServeHTTP(w, r)
+	return
+}
+
 func main() {
 	// Initialize a new webauthn firewall
 	wfirewall := NewWebauthnFirewall()
@@ -725,6 +966,8 @@ func main() {
 
 	r.HandleFunc("/webauthn/disable", wfirewall.disableWebauthn).Methods("POST")
 	r.HandleFunc("/{username}/{reponame}/settings", wfirewall.repoSettings).Methods("POST")
+	r.HandleFunc("/user/settings/ssh", wfirewall.addSSHKey).Methods("POST")
+	r.HandleFunc("/user/settings/ssh/delete", wfirewall.deleteSSHKey).Methods("POST")
 
 	// Catch all other requests and simply proxy them onward
 	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
