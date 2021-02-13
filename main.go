@@ -276,6 +276,70 @@ func (proxy *WebauthnFirewall) optionsHandler(allowMethods ...string) func(http.
 	}
 }
 
+func (proxy *WebauthnFirewall) webauthnSecure(
+	getTxExtensions func(*http.Request) (protocol.AuthenticationExtensions, error),
+) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Call the proxy preamble
+		proxy.preamble(w, r)
+
+		// Retrieve the `userID` associated with the current session
+		userID, err := userIDFromSession(r)
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// See if the user has webauthn enabled
+		isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUserID(userID))
+
+		// Perform a webauthn check if webauthn is enabled for this user
+		if isEnabled {
+			// Instantiate a `RequestRefiller` since `r` will be read multiple times
+			reqRefill, err := NewRequestRefiller(r)
+			if err != nil {
+				log.Error("%v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			// Parse the form-data to retrieve the `http.Request` information
+			assertion := r.FormValue("assertion")
+			if assertion == "" {
+				errText := "Invalid form-data parameters"
+				log.Error("%v", errText)
+				http.Error(w, errText, http.StatusInternalServerError)
+				return
+			}
+
+			// Get the `extensions` to verify against
+			extensions, err := getTxExtensions(r)
+			if err != nil {
+				log.Error("%v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			// Check the webauthn assertion for this operation
+			err = checkWebauthnAssertion(r, db.QueryByUserID(userID), extensions, assertion)
+			if err != nil {
+				log.Error("%v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			// Refill the `request` data before proxying onward
+			reqRefill.Refill()
+		}
+
+		// Once the webauthn check passed, pass the request onward to
+		// the server to check the username and password
+		proxy.ServeHTTP(w, r)
+		return
+	}
+}
+
 // TODO!: Check some sort of token before responding to this since any user can
 // be queried with the GET to retrieve their webauthn status
 func (proxy *WebauthnFirewall) webauthnIsEnabled(w http.ResponseWriter, r *http.Request) {
@@ -644,55 +708,18 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 	w.Write(json_response)
 }
 
-func (proxy *WebauthnFirewall) deleteRepositoryHelper(w http.ResponseWriter, r *http.Request) {
-	// Call the proxy preamble
-	proxy.preamble(w, r)
+func (proxy *WebauthnFirewall) deleteRepositoryHelper(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Get the `username` and `reponame` variables passed in the url
+	// used for the transaction string verification
+	vars := mux.Vars(r)
+	username := vars["username"]
+	reponame := vars["reponame"]
 
-	// Retrieve the `userID` associated with the current session
-	userID, err := userIDFromSession(r)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// Create the extension to verify against
+	extensions := make(protocol.AuthenticationExtensions)
+	extensions["txAuthSimple"] = fmt.Sprintf("Confirm repository delete: %s/%s", username, reponame)
 
-	// See if the user has webauthn enabled
-	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUserID(userID))
-
-	// Perform a webauthn check if webauthn is enabled for this user
-	if isEnabled {
-		// Parse the form-data to retrieve the `http.Request` information
-		assertion := r.FormValue("assertion")
-		if assertion == "" {
-			errText := "Invalid form-data parameters"
-			log.Error("%v", errText)
-			http.Error(w, errText, http.StatusInternalServerError)
-			return
-		}
-
-		// Get the `username` and `reponame` variables passed in the url
-		// used for the transaction string verification
-		vars := mux.Vars(r)
-		username := vars["username"]
-		reponame := vars["reponame"]
-
-		// Create the extension to verify against
-		extensions := make(protocol.AuthenticationExtensions)
-		extensions["txAuthSimple"] = fmt.Sprintf("Confirm repository delete: %s/%s", username, reponame)
-
-		// Check the webauthn assertion for this operation
-		err = checkWebauthnAssertion(r, db.QueryByUserID(userID), extensions, assertion)
-		if err != nil {
-			log.Error("%v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
-
-	// Once the webauthn check passed, pass the request onward to
-	// the server to check the username and password
-	proxy.ServeHTTP(w, r)
-	return
+	return extensions, nil
 }
 
 func (proxy *WebauthnFirewall) repoSettings(w http.ResponseWriter, r *http.Request) {
@@ -716,145 +743,72 @@ func (proxy *WebauthnFirewall) repoSettings(w http.ResponseWriter, r *http.Reque
 	// Refill the `request` data before handling onward
 	reqRefill.Refill()
 
+	var handlerFn func(http.ResponseWriter, *http.Request)
+
 	switch action {
 	case "delete":
 		// Handle deletion separately
-		proxy.deleteRepositoryHelper(w, r)
+		handlerFn = proxy.webauthnSecure(proxy.deleteRepositoryHelper)
 	default:
 		// Proxy all other requests
-		proxy.proxyRequest(w, r)
+		handlerFn = proxy.proxyRequest
 	}
+
+	// Handle this request according to the set `handlerFn` function
+	handlerFn(w, r)
 
 	return
 }
 
-func (proxy *WebauthnFirewall) addSSHKey(w http.ResponseWriter, r *http.Request) {
-	// Call the proxy preamble
-	proxy.preamble(w, r)
+func (proxy *WebauthnFirewall) addSSHKey(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	sshKeyName := r.FormValue("title")
+	if sshKeyName == "" {
+		return nil, fmt.Errorf("Invalid form-data parameters")
+	}
 
-	// Retrieve the `userID` associated with the current session
-	userID, err := userIDFromSession(r)
+	// Create the extension to verify against
+	extensions := make(protocol.AuthenticationExtensions)
+	extensions["txAuthSimple"] = fmt.Sprintf("Add SSH key named: %v", sshKeyName)
+
+	return extensions, nil
+}
+
+func (proxy *WebauthnFirewall) deleteSSHKey(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	sshKeyID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
 	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 
-	// See if the user has webauthn enabled
-	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUserID(userID))
-
-	// Perform a webauthn check if webauthn is enabled for this user
-	if isEnabled {
-		// Instantiate a `RequestRefiller` since `r` will be read multiple times
-		reqRefill, err := NewRequestRefiller(r)
-		if err != nil {
-			log.Error("%v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Parse the form-data to retrieve the `http.Request` information
-		assertion := r.FormValue("assertion")
-		sshKeyName := r.FormValue("title")
-		if assertion == "" || sshKeyName == "" {
-			errText := "Invalid form-data parameters"
-			log.Error("%v", errText)
-			http.Error(w, errText, http.StatusInternalServerError)
-			return
-		}
-
-		// Create the extension to verify against
-		extensions := make(protocol.AuthenticationExtensions)
-		extensions["txAuthSimple"] = fmt.Sprintf("Add SSH key named: %v", sshKeyName)
-
-		// Check the webauthn assertion for this operation
-		err = checkWebauthnAssertion(r, db.QueryByUserID(userID), extensions, assertion)
-		if err != nil {
-			log.Error("%v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		// Refill the `request` data before proxying onward
-		reqRefill.Refill()
-	}
-
-	// Once the webauthn check passed, pass the request onward to
-	// the server to check the username and password
-	proxy.ServeHTTP(w, r)
-	return
-}
-
-func (proxy *WebauthnFirewall) deleteSSHKey(w http.ResponseWriter, r *http.Request) {
-	// Call the proxy preamble
-	proxy.preamble(w, r)
-
-	// Retrieve the `userID` associated with the current session
-	userID, err := userIDFromSession(r)
+	sshKey, err := sshKeyFromSSHKeyID(sshKeyID)
 	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 
-	// See if the user has webauthn enabled
-	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUserID(userID))
+	// Create the extension to verify against
+	extensions := make(protocol.AuthenticationExtensions)
+	extensions["txAuthSimple"] = fmt.Sprintf("Delete SSH key named: %v", sshKey.Name)
 
-	// Perform a webauthn check if webauthn is enabled for this user
-	if isEnabled {
-		// Instantiate a `RequestRefiller` since `r` will be read multiple times
-		reqRefill, err := NewRequestRefiller(r)
-		if err != nil {
-			log.Error("%v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Parse the form-data to retrieve the `http.Request` information
-		assertion := r.FormValue("assertion")
-		if assertion == "" {
-			errText := "Invalid form-data parameters"
-			log.Error("%v", errText)
-			http.Error(w, errText, http.StatusInternalServerError)
-			return
-		}
-
-		sshKeyID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
-		if err != nil {
-			log.Error("%v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		sshKey, err := sshKeyFromSSHKeyID(sshKeyID)
-		if err != nil {
-			log.Error("%v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Create the extension to verify against
-		extensions := make(protocol.AuthenticationExtensions)
-		extensions["txAuthSimple"] = fmt.Sprintf("Delete SSH key named: %v", sshKey.Name)
-
-		// Check the webauthn assertion for this operation
-		err = checkWebauthnAssertion(r, db.QueryByUserID(userID), extensions, assertion)
-		if err != nil {
-			log.Error("%v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		// Refill the `request` data before proxying onward
-		reqRefill.Refill()
-	}
-
-	// Once the webauthn check passed, pass the request onward to
-	// the server to check the username and password
-	proxy.ServeHTTP(w, r)
-	return
+	// Success!
+	return extensions, nil
 }
 
+func (proxy *WebauthnFirewall) userProfileUpdate(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Parse the form-data to retrieve the `http.Request` information
+	username := r.FormValue("name")
+	email := r.FormValue("email")
+	if username == "" || email == "" {
+		return nil, fmt.Errorf("Invalid form-data parameters")
+	}
+
+	// Create the extension to verify against
+	extensions := make(protocol.AuthenticationExtensions)
+	extensions["txAuthSimple"] = fmt.Sprintf("Confirm profile details: username %v email %v", username, email)
+
+	// Success!
+	return extensions, nil
+}
+
+// TODO: A lot of these functions can be put into their own files such as the registration, log in, txAuthn handlers, util functions
 func main() {
 	// Initialize a new webauthn firewall
 	wfirewall := NewWebauthnFirewall()
@@ -878,11 +832,12 @@ func main() {
 	r.HandleFunc("/user/login", wfirewall.finishLogin).Methods("POST")
 
 	r.HandleFunc("/webauthn/begin_attestation", wfirewall.beginAttestation).Methods("POST")
-
 	r.HandleFunc("/webauthn/disable", wfirewall.disableWebauthn).Methods("POST")
+
 	r.HandleFunc("/{username}/{reponame}/settings", wfirewall.repoSettings).Methods("POST")
-	r.HandleFunc("/user/settings/ssh", wfirewall.addSSHKey).Methods("POST")
-	r.HandleFunc("/user/settings/ssh/delete", wfirewall.deleteSSHKey).Methods("POST")
+	r.HandleFunc("/user/settings/ssh", wfirewall.webauthnSecure(wfirewall.addSSHKey)).Methods("POST")
+	r.HandleFunc("/user/settings/ssh/delete", wfirewall.webauthnSecure(wfirewall.deleteSSHKey)).Methods("POST")
+	r.HandleFunc("/user/settings", wfirewall.webauthnSecure(wfirewall.userProfileUpdate)).Methods("POST")
 
 	// Catch all other requests and simply proxy them onward
 	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
