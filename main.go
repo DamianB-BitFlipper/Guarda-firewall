@@ -190,6 +190,36 @@ func checkWebauthnAssertion(
 	return nil
 }
 
+type RequestRefiller struct {
+	request *http.Request
+	data    []byte
+}
+
+func NewRequestRefiller(r *http.Request) (*RequestRefiller, error) {
+	refill := new(RequestRefiller)
+
+	// Get the `data` from the `http.Request` so that it can be restored again if necessary
+	data, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set the `request` and `data` fields
+	refill.request = r
+	refill.data = data
+
+	// Refill the `http.Request` since it was read during setup
+	refill.Refill()
+
+	// Success!
+	return refill, nil
+}
+
+func (rf *RequestRefiller) Refill() {
+	// Reload the `r.Body` from the `data` before reading the form fields
+	rf.request.Body = ioutil.NopCloser(bytes.NewReader(rf.data))
+}
+
 type WebauthnFirewall struct {
 	*httputil.ReverseProxy
 }
@@ -208,10 +238,16 @@ func NewWebauthnFirewall() *WebauthnFirewall {
 }
 
 func (proxy *WebauthnFirewall) preamble(w http.ResponseWriter, r *http.Request) {
+	// Print the HTTP request if verbosity is on
 	if verbose {
 		logRequest(r)
 	}
 
+	// Allow transmitting cookies, used by `sessionStore`
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+}
+
+func (proxy *WebauthnFirewall) prepareJSONResponse(w http.ResponseWriter) {
 	// Set the header info
 	w.Header().Set("Access-Control-Allow-Origin", frontendAddress)
 	w.Header().Set("Content-Type", "application/json")
@@ -228,14 +264,13 @@ func (proxy *WebauthnFirewall) proxyRequest(w http.ResponseWriter, r *http.Reque
 
 func (proxy *WebauthnFirewall) optionsHandler(allowMethods ...string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if verbose {
-			logRequest(r)
-		}
+		// Call the proxy preamble
+		proxy.preamble(w, r)
+
 		// Set the return OPTIONS
 		w.Header().Set("Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", strings.Join(allowMethods, ","))
 		w.Header().Set("Access-Control-Allow-Origin", frontendAddress)
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -244,8 +279,13 @@ func (proxy *WebauthnFirewall) optionsHandler(allowMethods ...string) func(http.
 // TODO!: Check some sort of token before responding to this since any user can
 // be queried with the GET to retrieve their webauthn status
 func (proxy *WebauthnFirewall) webauthnIsEnabled(w http.ResponseWriter, r *http.Request) {
-	// Call the proxy preamble
-	proxy.preamble(w, r)
+	// Print the HTTP request if verbosity is on
+	if verbose {
+		logRequest(r)
+	}
+
+	// Prepare the response for a JSON object return
+	proxy.prepareJSONResponse(w)
 
 	// Get the `user` variable passed in the url
 	vars := mux.Vars(r)
@@ -270,8 +310,8 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 	// Call the proxy preamble
 	proxy.preamble(w, r)
 
-	// Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	// Prepare the response for a JSON object return
+	proxy.prepareJSONResponse(w)
 
 	// Parse the form-data to retrieve the `http.Request` information
 	username := r.FormValue("username")
@@ -333,8 +373,8 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 	// Call the proxy preamble
 	proxy.preamble(w, r)
 
-	// Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	// Prepare the response for a JSON object return
+	proxy.prepareJSONResponse(w)
 
 	// Parse the form-data to retrieve the `http.Request` information
 	username := r.FormValue("username")
@@ -393,9 +433,6 @@ func (proxy *WebauthnFirewall) beginAttestation_base(
 	query db.WebauthnQuery, clientExtensions protocol.AuthenticationExtensions,
 	w http.ResponseWriter, r *http.Request) {
 
-	// Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
-
 	// See if the user has webauthn enabled
 	isEnabled := db.WebauthnStore.IsUserEnabled(query)
 
@@ -451,6 +488,9 @@ func (proxy *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *http.R
 	// Call the proxy preamble
 	proxy.preamble(w, r)
 
+	// Prepare the response for a JSON object return
+	proxy.prepareJSONResponse(w)
+
 	// Retrieve the `userID` associated with the current session
 	userID, err := userIDFromSession(r)
 	if err != nil {
@@ -480,6 +520,9 @@ func (proxy *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *http.Request
 	// Call the proxy preamble
 	proxy.preamble(w, r)
 
+	// Prepare the response for a JSON object return
+	proxy.prepareJSONResponse(w)
+
 	// Parse the form-data to retrieve the `http.Request` information
 	username := r.FormValue("user_name")
 	if username == "" {
@@ -494,24 +537,16 @@ func (proxy *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *http.Request
 }
 
 func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Request) {
-	// Print the HTTP request if verbosity is on
-	if verbose {
-		logRequest(r)
-	}
+	// Call the proxy preamble
+	proxy.preamble(w, r)
 
-	// Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
-
-	// Get the `data` from the `http.Request` so that it can be restored again if necessary
-	data, err := ioutil.ReadAll(r.Body)
+	// Instantiate a `RequestRefiller` since `r` will be read multiple times
+	reqRefill, err := NewRequestRefiller(r)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	// Reload the `r.Body` from the `data` before reading the form fields
-	r.Body = ioutil.NopCloser(bytes.NewReader(data))
 
 	// Parse the form-data to retrieve the `http.Request` information
 	username := r.FormValue("user_name")
@@ -537,8 +572,8 @@ func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	// Reload the `r.Body` from the `data` before proxying onward
-	r.Body = ioutil.NopCloser(bytes.NewReader(data))
+	// Refill the `request` data before proxying onward
+	reqRefill.Refill()
 
 	// Once the webauthn check passed, pass the request onward to
 	// the server to check the username and password
@@ -610,13 +645,8 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 }
 
 func (proxy *WebauthnFirewall) deleteRepositoryHelper(w http.ResponseWriter, r *http.Request) {
-	// Print the HTTP request if verbosity is on
-	if verbose {
-		logRequest(r)
-	}
-
-	// Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	// Call the proxy preamble
+	proxy.preamble(w, r)
 
 	// Retrieve the `userID` associated with the current session
 	userID, err := userIDFromSession(r)
@@ -666,16 +696,13 @@ func (proxy *WebauthnFirewall) deleteRepositoryHelper(w http.ResponseWriter, r *
 }
 
 func (proxy *WebauthnFirewall) repoSettings(w http.ResponseWriter, r *http.Request) {
-	// Get the `data` from the `http.Request` so that it can be restored again if necessary
-	data, err := ioutil.ReadAll(r.Body)
+	// Instantiate a `RequestRefiller` since `r` will be read multiple times
+	reqRefill, err := NewRequestRefiller(r)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	// Reload the `r.Body` from the `data` before reading the form fields
-	r.Body = ioutil.NopCloser(bytes.NewReader(data))
 
 	// Parse the form-data to retrieve the `http.Request` information
 	action := r.FormValue("action")
@@ -686,8 +713,8 @@ func (proxy *WebauthnFirewall) repoSettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Reload the `r.Body` from the `data` before handling onwards
-	r.Body = ioutil.NopCloser(bytes.NewReader(data))
+	// Refill the `request` data before handling onward
+	reqRefill.Refill()
 
 	switch action {
 	case "delete":
@@ -702,13 +729,8 @@ func (proxy *WebauthnFirewall) repoSettings(w http.ResponseWriter, r *http.Reque
 }
 
 func (proxy *WebauthnFirewall) addSSHKey(w http.ResponseWriter, r *http.Request) {
-	// Print the HTTP request if verbosity is on
-	if verbose {
-		logRequest(r)
-	}
-
-	// Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	// Call the proxy preamble
+	proxy.preamble(w, r)
 
 	// Retrieve the `userID` associated with the current session
 	userID, err := userIDFromSession(r)
@@ -723,16 +745,13 @@ func (proxy *WebauthnFirewall) addSSHKey(w http.ResponseWriter, r *http.Request)
 
 	// Perform a webauthn check if webauthn is enabled for this user
 	if isEnabled {
-		// Get the `data` from the `http.Request` so that it can be restored again if necessary
-		data, err := ioutil.ReadAll(r.Body)
+		// Instantiate a `RequestRefiller` since `r` will be read multiple times
+		reqRefill, err := NewRequestRefiller(r)
 		if err != nil {
 			log.Error("%v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		// Reload the `r.Body` from the `data` before reading the form fields
-		r.Body = ioutil.NopCloser(bytes.NewReader(data))
 
 		// Parse the form-data to retrieve the `http.Request` information
 		assertion := r.FormValue("assertion")
@@ -756,8 +775,8 @@ func (proxy *WebauthnFirewall) addSSHKey(w http.ResponseWriter, r *http.Request)
 			return
 		}
 
-		// Reload the `r.Body` from the `data` before proxying onward
-		r.Body = ioutil.NopCloser(bytes.NewReader(data))
+		// Refill the `request` data before proxying onward
+		reqRefill.Refill()
 	}
 
 	// Once the webauthn check passed, pass the request onward to
@@ -767,13 +786,8 @@ func (proxy *WebauthnFirewall) addSSHKey(w http.ResponseWriter, r *http.Request)
 }
 
 func (proxy *WebauthnFirewall) deleteSSHKey(w http.ResponseWriter, r *http.Request) {
-	// Print the HTTP request if verbosity is on
-	if verbose {
-		logRequest(r)
-	}
-
-	// Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	// Call the proxy preamble
+	proxy.preamble(w, r)
 
 	// Retrieve the `userID` associated with the current session
 	userID, err := userIDFromSession(r)
@@ -788,16 +802,13 @@ func (proxy *WebauthnFirewall) deleteSSHKey(w http.ResponseWriter, r *http.Reque
 
 	// Perform a webauthn check if webauthn is enabled for this user
 	if isEnabled {
-		// Get the `data` from the `http.Request` so that it can be restored again if necessary
-		data, err := ioutil.ReadAll(r.Body)
+		// Instantiate a `RequestRefiller` since `r` will be read multiple times
+		reqRefill, err := NewRequestRefiller(r)
 		if err != nil {
 			log.Error("%v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		// Reload the `r.Body` from the `data` before reading the form fields
-		r.Body = ioutil.NopCloser(bytes.NewReader(data))
 
 		// Parse the form-data to retrieve the `http.Request` information
 		assertion := r.FormValue("assertion")
@@ -834,8 +845,8 @@ func (proxy *WebauthnFirewall) deleteSSHKey(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		// Reload the `r.Body` from the `data` before proxying onward
-		r.Body = ioutil.NopCloser(bytes.NewReader(data))
+		// Refill the `request` data before proxying onward
+		reqRefill.Refill()
 	}
 
 	// Once the webauthn check passed, pass the request onward to
