@@ -148,6 +148,21 @@ func sshKeyFromSSHKeyID(sshKeyID int64) (*SSHKey, error) {
 	return publicKey, nil
 }
 
+type Email struct {
+	Email string
+}
+
+func emailFromEmailID(emailID int64) (*Email, error) {
+	email := new(Email)
+	err := itemFromItemID("email", emailID, email)
+	if err != nil {
+		return nil, err
+	}
+
+	// Success!
+	return email, nil
+}
+
 func checkWebauthnAssertion(
 	r *http.Request,
 	query db.WebauthnQuery,
@@ -756,7 +771,6 @@ func (proxy *WebauthnFirewall) repoSettings(w http.ResponseWriter, r *http.Reque
 
 	// Handle this request according to the set `handlerFn` function
 	handlerFn(w, r)
-
 	return
 }
 
@@ -774,6 +788,7 @@ func (proxy *WebauthnFirewall) addSSHKey(r *http.Request) (protocol.Authenticati
 }
 
 func (proxy *WebauthnFirewall) deleteSSHKey(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Get the full `sshKey` data from the `sshKeyID` located in the form
 	sshKeyID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
 	if err != nil {
 		return nil, err
@@ -808,6 +823,57 @@ func (proxy *WebauthnFirewall) userProfileUpdate(r *http.Request) (protocol.Auth
 	return extensions, nil
 }
 
+func (proxy *WebauthnFirewall) setPrimaryEmailHelper(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Get the full `email` data from the `emailID` located in the form
+	emailID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	email, err := emailFromEmailID(emailID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create the extension to verify against
+	extensions := make(protocol.AuthenticationExtensions)
+	extensions["txAuthSimple"] = fmt.Sprintf("Confirm new primary email: %v", email.Email)
+
+	// Success!
+	return extensions, nil
+}
+
+func (proxy *WebauthnFirewall) userSettingsEmail(w http.ResponseWriter, r *http.Request) {
+	// Instantiate a `RequestRefiller` since `r` will be read multiple times
+	reqRefill, err := NewRequestRefiller(r)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Parse the form-data to retrieve the `http.Request` information
+	action := r.FormValue("_method")
+
+	// Refill the `request` data before handling onward
+	reqRefill.Refill()
+
+	var handlerFn func(http.ResponseWriter, *http.Request)
+
+	switch action {
+	case "PRIMARY":
+		// Handle primary email separately
+		handlerFn = proxy.webauthnSecure(proxy.setPrimaryEmailHelper)
+	default:
+		// Proxy all other requests
+		handlerFn = proxy.proxyRequest
+	}
+
+	// Handle this request according to the set `handlerFn` function
+	handlerFn(w, r)
+	return
+}
+
 // TODO: A lot of these functions can be put into their own files such as the registration, log in, txAuthn handlers, util functions
 func main() {
 	// Initialize a new webauthn firewall
@@ -838,6 +904,7 @@ func main() {
 	r.HandleFunc("/user/settings/ssh", wfirewall.webauthnSecure(wfirewall.addSSHKey)).Methods("POST")
 	r.HandleFunc("/user/settings/ssh/delete", wfirewall.webauthnSecure(wfirewall.deleteSSHKey)).Methods("POST")
 	r.HandleFunc("/user/settings", wfirewall.webauthnSecure(wfirewall.userProfileUpdate)).Methods("POST")
+	r.HandleFunc("/user/settings/email", wfirewall.userSettingsEmail).Methods("POST")
 
 	// Catch all other requests and simply proxy them onward
 	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
