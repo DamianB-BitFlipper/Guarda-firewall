@@ -163,6 +163,21 @@ func emailFromEmailID(emailID int64) (*Email, error) {
 	return email, nil
 }
 
+type Repo struct {
+	Name string
+}
+
+func repoFromRepoID(repoID int64) (*Repo, error) {
+	repo := new(Repo)
+	err := itemFromItemID("repository", repoID, repo)
+	if err != nil {
+		return nil, err
+	}
+
+	// Success!
+	return repo, nil
+}
+
 func checkWebauthnAssertion(
 	r *http.Request,
 	query db.WebauthnQuery,
@@ -874,6 +889,35 @@ func (proxy *WebauthnFirewall) userSettingsEmail(w http.ResponseWriter, r *http.
 	return
 }
 
+func (proxy *WebauthnFirewall) passwordChange(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Create the extension to verify against
+	extensions := make(protocol.AuthenticationExtensions)
+	extensions["txAuthSimple"] = "Confirm password change"
+
+	// Success!
+	return extensions, nil
+}
+
+func (proxy *WebauthnFirewall) leaveRepository(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Get the full `repo` data from the `repoID` located in the form
+	repoID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	repo, err := repoFromRepoID(repoID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create the extension to verify against
+	extensions := make(protocol.AuthenticationExtensions)
+	extensions["txAuthSimple"] = fmt.Sprintf("Leave repository named: %v", repo.Name)
+
+	// Success!
+	return extensions, nil
+}
+
 // TODO: A lot of these functions can be put into their own files such as the registration, log in, txAuthn handlers, util functions
 func main() {
 	// Initialize a new webauthn firewall
@@ -905,6 +949,8 @@ func main() {
 	r.HandleFunc("/user/settings/ssh/delete", wfirewall.webauthnSecure(wfirewall.deleteSSHKey)).Methods("POST")
 	r.HandleFunc("/user/settings", wfirewall.webauthnSecure(wfirewall.userProfileUpdate)).Methods("POST")
 	r.HandleFunc("/user/settings/email", wfirewall.userSettingsEmail).Methods("POST")
+	r.HandleFunc("/user/settings/password", wfirewall.webauthnSecure(wfirewall.passwordChange)).Methods("POST")
+	r.HandleFunc("/user/settings/repositories/leave", wfirewall.webauthnSecure(wfirewall.leaveRepository)).Methods("POST")
 
 	// Catch all other requests and simply proxy them onward
 	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
