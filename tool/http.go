@@ -8,7 +8,7 @@ import (
 	"net/http"
 )
 
-func PerformHTTP_RequestJSON(req *http.Request, responseBody interface{}) error {
+func PerformRequestJSON(req *http.Request, responseBody interface{}) error {
 	// TODO: Make this a confiruable option in the `initHTTP` function
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -27,6 +27,24 @@ func PerformHTTP_RequestJSON(req *http.Request, responseBody interface{}) error 
 	}
 
 	err = json.NewDecoder(resp.Body).Decode(responseBody)
+	if err != nil {
+		return err
+	}
+
+	// Success!
+	return nil
+}
+
+// Perform a simple GET request that expects a JSON response
+func GetRequestJSON(url string, responseBody interface{}) error {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	// Perform the `req` and write the JSON output into
+	// the `responseBody` (interface to a pointer struct)
+	err = PerformRequestJSON(req, responseBody)
 	if err != nil {
 		return err
 	}

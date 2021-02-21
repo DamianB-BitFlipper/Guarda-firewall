@@ -101,7 +101,7 @@ func userIDFromSession(r *http.Request) (int64, error) {
 		Ok     bool  `json:"ok"`
 		UserID int64 `json:"uid"`
 	}
-	err = tool.PerformHTTP_RequestJSON(userIDReq, &sessionInfo)
+	err = tool.PerformRequestJSON(userIDReq, &sessionInfo)
 	if err != nil {
 		return 0, err
 	}
@@ -117,19 +117,13 @@ func userIDFromSession(r *http.Request) (int64, error) {
 func itemFromItemID(itemType string, id int64, itemStruct interface{}) error {
 	// Construct the URL to retrieve the item from the input item `id`
 	url := fmt.Sprintf("%s/server_context/%s/%d", backendAddress, itemType, id)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err
-	}
+	return tool.GetRequestJSON(url, itemStruct)
+}
 
-	// Perform the `req` and write the JSON output into the `itemStruct` (interface to a pointer)
-	err = tool.PerformHTTP_RequestJSON(req, itemStruct)
-	if err != nil {
-		return err
-	}
-
-	// Success!
-	return nil
+func itemFromUserItemID(itemType string, userID, id int64, itemStruct interface{}) error {
+	// Construct the URL to retrieve the item from the input item `id`
+	url := fmt.Sprintf("%s/server_context/%s/%d/%d", backendAddress, itemType, userID, id)
+	return tool.GetRequestJSON(url, itemStruct)
 }
 
 type SSHKey struct {
@@ -176,6 +170,21 @@ func repoFromRepoID(repoID int64) (*Repo, error) {
 
 	// Success!
 	return repo, nil
+}
+
+type AppToken struct {
+	Name string
+}
+
+func appTokenFromAppTokenID(userID, id int64) (*AppToken, error) {
+	appToken := new(AppToken)
+	err := itemFromUserItemID("app_token", userID, id, appToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Success!
+	return appToken, nil
 }
 
 func checkWebauthnAssertion(
@@ -918,6 +927,33 @@ func (proxy *WebauthnFirewall) leaveRepository(r *http.Request) (protocol.Authen
 	return extensions, nil
 }
 
+func (proxy *WebauthnFirewall) deleteApplicationToken(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Get the full `appToken` data from the `appTokenID` located in the form
+	appTokenID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO: This is repeated. Already done in parent `webauthnSecure` function
+	// Retrieve the `userID` associated with the current session
+	userID, err := userIDFromSession(r)
+	if err != nil {
+		return nil, err
+	}
+
+	appToken, err := appTokenFromAppTokenID(userID, appTokenID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create the extension to verify against
+	extensions := make(protocol.AuthenticationExtensions)
+	extensions["txAuthSimple"] = fmt.Sprintf("Delete App named: %v", appToken.Name)
+
+	// Success!
+	return extensions, nil
+}
+
 // TODO: A lot of these functions can be put into their own files such as the registration, log in, txAuthn handlers, util functions
 func main() {
 	// Initialize a new webauthn firewall
@@ -951,6 +987,7 @@ func main() {
 	r.HandleFunc("/user/settings/email", wfirewall.userSettingsEmail).Methods("POST")
 	r.HandleFunc("/user/settings/password", wfirewall.webauthnSecure(wfirewall.passwordChange)).Methods("POST")
 	r.HandleFunc("/user/settings/repositories/leave", wfirewall.webauthnSecure(wfirewall.leaveRepository)).Methods("POST")
+	r.HandleFunc("/user/settings/applications/delete", wfirewall.webauthnSecure(wfirewall.deleteApplicationToken)).Methods("POST")
 
 	// Catch all other requests and simply proxy them onward
 	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
