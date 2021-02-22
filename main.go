@@ -114,6 +114,17 @@ func userIDFromSession(r *http.Request) (int64, error) {
 	return sessionInfo.UserID, nil
 }
 
+func itemFromIDs(itemType string, itemStruct interface{}, args ...interface{}) error {
+	urlArgs := make([]string, len(args))
+	for idx, v := range args {
+		urlArgs[idx] = fmt.Sprintf("%v", v)
+	}
+
+	// Construct the URL to retrieve the item from the input item `args`
+	url := fmt.Sprintf("%s/server_context/%s/%s", backendAddress, itemType, strings.Join(urlArgs, "/"))
+	return tool.GetRequestJSON(url, itemStruct)
+}
+
 func itemFromItemID(itemType string, id int64, itemStruct interface{}) error {
 	// Construct the URL to retrieve the item from the input item `id`
 	url := fmt.Sprintf("%s/server_context/%s/%d", backendAddress, itemType, id)
@@ -206,6 +217,21 @@ func attachmentFromAttachmentID(uuid string) (*Attachment, error) {
 
 	// Success!
 	return attachment, nil
+}
+
+type Webhook struct {
+	URL string
+}
+
+func webhookFromRepoWebhookID(username, repo string, webhookID int64) (*Webhook, error) {
+	webhook := new(Webhook)
+	err := itemFromIDs("repo_webhook", webhook, username, repo, webhookID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Success!
+	return webhook, nil
 }
 
 func checkWebauthnAssertion(
@@ -1016,6 +1042,31 @@ func (proxy *WebauthnFirewall) publishNewRelease(r *http.Request) (protocol.Auth
 	return extensions, nil
 }
 
+func (proxy *WebauthnFirewall) deleteWebhook(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Get the full `webhook` data from the `webhookID` located in the form
+	webhookID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get the `username` and `repo` variables passed in the url
+	vars := mux.Vars(r)
+	username := vars["username"]
+	repo := vars["repo"]
+
+	webhook, err := webhookFromRepoWebhookID(username, repo, webhookID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create the extension to verify against
+	extensions := make(protocol.AuthenticationExtensions)
+	extensions["txAuthSimple"] = fmt.Sprintf("Delete webhook for: URL %v", webhook.URL)
+
+	// Success!
+	return extensions, nil
+}
+
 // TODO: A lot of these functions can be put into their own files such as the registration, log in, txAuthn handlers, util functions
 func main() {
 	// Initialize a new webauthn firewall
@@ -1051,6 +1102,7 @@ func main() {
 	r.HandleFunc("/user/settings/repositories/leave", wfirewall.webauthnSecure(wfirewall.leaveRepository)).Methods("POST")
 	r.HandleFunc("/user/settings/applications/delete", wfirewall.webauthnSecure(wfirewall.deleteApplicationToken)).Methods("POST")
 	r.HandleFunc("/{username}/{repo}/releases/new", wfirewall.webauthnSecure(wfirewall.publishNewRelease)).Methods("POST")
+	r.HandleFunc("/{username}/{repo}/settings/hooks/delete", wfirewall.webauthnSecure(wfirewall.deleteWebhook)).Methods("POST")
 
 	// Catch all other requests and simply proxy them onward
 	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
