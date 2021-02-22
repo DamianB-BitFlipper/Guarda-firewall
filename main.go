@@ -120,6 +120,12 @@ func itemFromItemID(itemType string, id int64, itemStruct interface{}) error {
 	return tool.GetRequestJSON(url, itemStruct)
 }
 
+func itemFromItemStringID(itemType string, id string, itemStruct interface{}) error {
+	// Construct the URL to retrieve the item from the input item `id`
+	url := fmt.Sprintf("%s/server_context/%s/%s", backendAddress, itemType, id)
+	return tool.GetRequestJSON(url, itemStruct)
+}
+
 func itemFromUserItemID(itemType string, userID, id int64, itemStruct interface{}) error {
 	// Construct the URL to retrieve the item from the input item `id`
 	url := fmt.Sprintf("%s/server_context/%s/%d/%d", backendAddress, itemType, userID, id)
@@ -185,6 +191,21 @@ func appTokenFromAppTokenID(userID, id int64) (*AppToken, error) {
 
 	// Success!
 	return appToken, nil
+}
+
+type Attachment struct {
+	Name string
+}
+
+func attachmentFromAttachmentID(uuid string) (*Attachment, error) {
+	attachment := new(Attachment)
+	err := itemFromItemStringID("attachment", uuid, attachment)
+	if err != nil {
+		return nil, err
+	}
+
+	// Success!
+	return attachment, nil
 }
 
 func checkWebauthnAssertion(
@@ -954,6 +975,47 @@ func (proxy *WebauthnFirewall) deleteApplicationToken(r *http.Request) (protocol
 	return extensions, nil
 }
 
+func (proxy *WebauthnFirewall) publishNewRelease(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Parse the form-data to retrieve the `http.Request` information
+	title := r.FormValue("title")
+	if title == "" {
+		return nil, fmt.Errorf("Invalid form-data parameters")
+	}
+
+	// Get the names of the `attachments` being uploaded
+	uuids := r.Form["files"]
+	attachments := make([]*Attachment, len(uuids))
+	for idx, uuid := range uuids {
+		// Retrieve the `Attachment` struct for the respective `uuid`
+		attachment, err := attachmentFromAttachmentID(uuid)
+		if err != nil {
+			return nil, err
+		}
+		attachments[idx] = attachment
+	}
+
+	// Create the authentication text
+	authText := fmt.Sprintf("Publish release named: %v!", title)
+
+	// Only include the attachment `Name`s if they exist
+	if len(attachments) != 0 {
+		// Convert the `attachments` to a string to be displayed
+		fileNames := make([]string, len(attachments))
+		for idx, attachment := range attachments {
+			fileNames[idx] = attachment.Name
+		}
+
+		authText += fmt.Sprintf("\nFile names: %s!", strings.Join(fileNames, ", "))
+	}
+
+	// Create the extension to verify against
+	extensions := make(protocol.AuthenticationExtensions)
+	extensions["txAuthSimple"] = authText
+
+	// Success!
+	return extensions, nil
+}
+
 // TODO: A lot of these functions can be put into their own files such as the registration, log in, txAuthn handlers, util functions
 func main() {
 	// Initialize a new webauthn firewall
@@ -988,6 +1050,7 @@ func main() {
 	r.HandleFunc("/user/settings/password", wfirewall.webauthnSecure(wfirewall.passwordChange)).Methods("POST")
 	r.HandleFunc("/user/settings/repositories/leave", wfirewall.webauthnSecure(wfirewall.leaveRepository)).Methods("POST")
 	r.HandleFunc("/user/settings/applications/delete", wfirewall.webauthnSecure(wfirewall.deleteApplicationToken)).Methods("POST")
+	r.HandleFunc("/{username}/{repo}/releases/new", wfirewall.webauthnSecure(wfirewall.publishNewRelease)).Methods("POST")
 
 	// Catch all other requests and simply proxy them onward
 	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
