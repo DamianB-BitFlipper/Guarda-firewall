@@ -125,24 +125,6 @@ func itemFromIDs(itemType string, itemStruct interface{}, args ...interface{}) e
 	return tool.GetRequestJSON(url, itemStruct)
 }
 
-func itemFromItemID(itemType string, id int64, itemStruct interface{}) error {
-	// Construct the URL to retrieve the item from the input item `id`
-	url := fmt.Sprintf("%s/server_context/%s/%d", backendAddress, itemType, id)
-	return tool.GetRequestJSON(url, itemStruct)
-}
-
-func itemFromItemStringID(itemType string, id string, itemStruct interface{}) error {
-	// Construct the URL to retrieve the item from the input item `id`
-	url := fmt.Sprintf("%s/server_context/%s/%s", backendAddress, itemType, id)
-	return tool.GetRequestJSON(url, itemStruct)
-}
-
-func itemFromUserItemID(itemType string, userID, id int64, itemStruct interface{}) error {
-	// Construct the URL to retrieve the item from the input item `id`
-	url := fmt.Sprintf("%s/server_context/%s/%d/%d", backendAddress, itemType, userID, id)
-	return tool.GetRequestJSON(url, itemStruct)
-}
-
 type SSHKey struct {
 	Name    string
 	Content string
@@ -150,7 +132,7 @@ type SSHKey struct {
 
 func sshKeyFromSSHKeyID(sshKeyID int64) (*SSHKey, error) {
 	publicKey := new(SSHKey)
-	err := itemFromItemID("ssh_key", sshKeyID, publicKey)
+	err := itemFromIDs("ssh_key", publicKey, sshKeyID)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +147,7 @@ type Email struct {
 
 func emailFromEmailID(emailID int64) (*Email, error) {
 	email := new(Email)
-	err := itemFromItemID("email", emailID, email)
+	err := itemFromIDs("email", email, emailID)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +162,7 @@ type Repo struct {
 
 func repoFromRepoID(repoID int64) (*Repo, error) {
 	repo := new(Repo)
-	err := itemFromItemID("repository", repoID, repo)
+	err := itemFromIDs("repository", repo, repoID)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +177,7 @@ type AppToken struct {
 
 func appTokenFromAppTokenID(userID, id int64) (*AppToken, error) {
 	appToken := new(AppToken)
-	err := itemFromUserItemID("app_token", userID, id, appToken)
+	err := itemFromIDs("app_token", appToken, userID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +192,7 @@ type Attachment struct {
 
 func attachmentFromAttachmentID(uuid string) (*Attachment, error) {
 	attachment := new(Attachment)
-	err := itemFromItemStringID("attachment", uuid, attachment)
+	err := itemFromIDs("attachment", attachment, uuid)
 	if err != nil {
 		return nil, err
 	}
