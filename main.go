@@ -28,8 +28,8 @@ import (
 )
 
 const (
-	frontendPort     int = 8081
-	backendPort      int = 3000
+	frontendPort     int = 4100
+	backendPort      int = 8080
 	reverseProxyPort int = 8081
 
 	ENV_SESSION_KEY string = "SESSION_KEY"
@@ -39,7 +39,7 @@ const (
 
 var (
 	frontendAddress     string = fmt.Sprintf("https://localhost:%d", frontendPort)
-	backendAddress      string = fmt.Sprintf("https://localhost:%d", backendPort)
+	backendAddress      string = fmt.Sprintf("http://localhost:%d", backendPort)
 	reverseProxyAddress string = fmt.Sprintf("localhost:%d", reverseProxyPort)
 
 	webauthnAPI  *webauthn.WebAuthn
@@ -295,8 +295,16 @@ type WebauthnFirewall struct {
 func NewWebauthnFirewall() *WebauthnFirewall {
 	origin, _ := url.Parse(backendAddress)
 	proxy := httputil.NewSingleHostReverseProxy(origin)
+
 	proxy.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
+	proxy.ModifyResponse = func(r *http.Response) error {
+		// Change the access control origin for all responses
+		// coming back from the reverse proxy server
+		r.Header.Set("Access-Control-Allow-Origin", frontendAddress)
+		return nil
 	}
 
 	// Construct and return the webauthn firewall
@@ -445,16 +453,20 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 	// Prepare the response for a JSON object return
 	proxy.prepareJSONResponse(w)
 
-	// Parse the form-data to retrieve the `http.Request` information
-	username := r.FormValue("username")
-	if username == "" {
-		errText := "Invalid form-data parameters"
-		log.Error("%v", errText)
-		http.Error(w, errText, http.StatusInternalServerError)
+	// Parse the JSON `http.Request`
+	var reqBody struct {
+		Username string `json:"username"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	userID, err := strconv.ParseInt(r.FormValue("userID"), 10, 64)
+	// userID, err := strconv.ParseInt(r.FormValue("userID"), 10, 64)
+	userID, err := userIDFromJWT(r)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -462,12 +474,7 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Create a new `webauthnUser` struct from the input details
-	wuser := db.NewWebauthnUser(userID, username, nil)
-
-	// TODO
-	// registerOptions := func(credCreationOpts *protocol.PublicKeyCredentialCreationOptions) {
-	// 	credCreationOpts.CredentialExcludeList = wuser.CredentialExcludeList()
-	// }
+	wuser := db.NewWebauthnUser(userID, reqBody.Username, nil)
 
 	// generate PublicKeyCredentialCreationOptions, session data
 	options, sessionData, err := webauthnAPI.BeginRegistration(
@@ -508,17 +515,20 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 	// Prepare the response for a JSON object return
 	proxy.prepareJSONResponse(w)
 
-	// Parse the form-data to retrieve the `http.Request` information
-	username := r.FormValue("username")
-	credentials := r.FormValue("credentials")
-	if username == "" || credentials == "" {
-		errText := "Invalid form-data parameters"
-		log.Error("%v", errText)
-		http.Error(w, errText, http.StatusInternalServerError)
+	// Parse the JSON `http.Request`
+	var reqBody struct {
+		Username  string `json:"username"`
+		Assertion string `json:"assertion"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	userID, err := strconv.ParseInt(r.FormValue("userID"), 10, 64)
+	userID, err := userIDFromJWT(r)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -526,7 +536,7 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 	}
 
 	// Create a new `webauthnUser` struct from the input details
-	wuser := db.NewWebauthnUser(userID, username, nil)
+	wuser := db.NewWebauthnUser(userID, reqBody.Username, nil)
 
 	// Load the session data
 	sessionData, err := sessionStore.GetWebauthnSession("registration", r)
@@ -536,7 +546,7 @@ func (proxy *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	wcredential, err := webauthnAPI.FinishRegistration(wuser, sessionData, credentials)
+	wcredential, err := webauthnAPI.FinishRegistration(wuser, sessionData, reqBody.Assertion)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -623,26 +633,29 @@ func (proxy *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *http.R
 	// Prepare the response for a JSON object return
 	proxy.prepareJSONResponse(w)
 
-	// Retrieve the `userID` associated with the current session
-	userID, err := userIDFromSession(r)
+	// Retrieve the `userID` associated with the current JWT
+	userID, err := userIDFromJWT(r)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Parse the form-data to retrieve the `http.Request` information
-	authenticationText := r.FormValue("auth_text")
-	if authenticationText == "" {
-		errText := "Invalid form-data parameters"
-		log.Error("%v", errText)
-		http.Error(w, errText, http.StatusInternalServerError)
+	// Parse the JSON `http.Request`
+	var reqBody struct {
+		AuthenticationText string `json:"auth_text"`
+	}
+
+	err = json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// Set the transaction authentication extension
 	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = authenticationText
+	extensions["txAuthSimple"] = reqBody.AuthenticationText
 
 	proxy.beginAttestation_base(db.QueryByUserID(userID), extensions, w, r)
 	return
@@ -655,16 +668,19 @@ func (proxy *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *http.Request
 	// Prepare the response for a JSON object return
 	proxy.prepareJSONResponse(w)
 
-	// Parse the form-data to retrieve the `http.Request` information
-	username := r.FormValue("user_name")
-	if username == "" {
-		errText := "Invalid form-data parameters"
-		log.Error("%v", errText)
-		http.Error(w, errText, http.StatusInternalServerError)
+	// Parse the JSON `http.Request`
+	var reqBody struct {
+		Username string `json:"username"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	proxy.beginAttestation_base(db.QueryByUsername(username), nil, w, r)
+	proxy.beginAttestation_base(db.QueryByUsername(reqBody.Username), nil, w, r)
 	return
 }
 
@@ -680,23 +696,28 @@ func (proxy *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Parse the form-data to retrieve the `http.Request` information
-	username := r.FormValue("user_name")
-	assertion := r.FormValue("assertion")
-	if username == "" || assertion == "" {
-		errText := "Invalid form-data parameters"
-		log.Error("%v", errText)
-		http.Error(w, errText, http.StatusInternalServerError)
+	// Parse the JSON `http.Request` now read into `data`
+	var reqBody struct {
+		User struct {
+			Username string `json:"username"`
+		} `json:"user"`
+		Assertion string `json:"assertion"`
+	}
+
+	err = json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// See if the user has webauthn enabled
-	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUsername(username))
+	isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUsername(reqBody.User.Username))
 
 	// Perform a webauthn check if webauthn is enabled for this user
 	if isEnabled {
 		// Check the webauthn assertion for this operation. There are no extensions to verify
-		err = checkWebauthnAssertion(r, db.QueryByUsername(username), nil, assertion)
+		err = checkWebauthnAssertion(r, db.QueryByUsername(reqBody.User.Username), nil, reqBody.Assertion)
 		if err != nil {
 			log.Error("%v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -717,23 +738,26 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 	// Call the proxy preamble
 	proxy.preamble(w, r)
 
-	// Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	// Prepare the response for a JSON object return
+	proxy.prepareJSONResponse(w)
 
-	// Retrieve the `userID` associated with the current session
-	userID, err := userIDFromSession(r)
+	// Retrieve the `userID` associated with the current JWT
+	userID, err := userIDFromJWT(r)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Parse the form-data to retrieve the `http.Request` information
-	assertion := r.FormValue("assertion")
-	if assertion == "" {
-		errText := "Invalid form-data parameters"
-		log.Error("%v", errText)
-		http.Error(w, errText, http.StatusInternalServerError)
+	// Parse the JSON `http.Request` now read into `data`
+	var reqBody struct {
+		Assertion string `json:"assertion"`
+	}
+
+	err = json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Error("%v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -753,7 +777,7 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 	extensions["txAuthSimple"] = fmt.Sprintf("Confirm disable webauthn for %v", wuser.WebAuthnName())
 
 	// Check the webauthn assertion for this operation.
-	err = checkWebauthnAssertion(r, query, extensions, assertion)
+	err = checkWebauthnAssertion(r, query, extensions, reqBody.Assertion)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1063,31 +1087,33 @@ func main() {
 	// Register the HTTP routes
 	r := mux.NewRouter()
 
+	// Webauthn routes
+	r.HandleFunc("/api/webauthn/is_enabled/{user}", wfirewall.optionsHandler("GET")).Methods("OPTIONS")
+	r.HandleFunc("/api/webauthn/is_enabled/{user}", wfirewall.webauthnIsEnabled).Methods("GET")
+
+	r.HandleFunc("/api/webauthn/begin_register", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
+	r.HandleFunc("/api/webauthn/begin_register", wfirewall.beginRegister).Methods("POST")
+
+	r.HandleFunc("/api/webauthn/finish_register", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
+	r.HandleFunc("/api/webauthn/finish_register", wfirewall.finishRegister).Methods("POST")
+
+	r.HandleFunc("/api/webauthn/begin_login", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
+	r.HandleFunc("/api/webauthn/begin_login", wfirewall.beginLogin).Methods("POST")
+
+	r.HandleFunc("/api/users/login", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
+	r.HandleFunc("/api/users/login", wfirewall.finishLogin).Methods("POST")
+
+	r.HandleFunc("/api/webauthn/begin_attestation", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
+	r.HandleFunc("/api/webauthn/begin_attestation", wfirewall.beginAttestation).Methods("POST")
+
+	r.HandleFunc("/api/webauthn/disable", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
+	r.HandleFunc("/api/webauthn/disable", wfirewall.disableWebauthn).Methods("POST")
+
 	// Proxy routes
-	r.HandleFunc("/webauthn/is_enabled/{user}", wfirewall.webauthnIsEnabled).Methods("GET")
-
-	r.HandleFunc("/webauthn/begin_register", wfirewall.beginRegister).Methods("POST")
-	r.HandleFunc("/webauthn/finish_register", wfirewall.finishRegister).Methods("POST")
-
-	r.HandleFunc("/webauthn/begin_login", wfirewall.beginLogin).Methods("POST")
-	r.HandleFunc("/user/login", wfirewall.finishLogin).Methods("POST")
-
-	r.HandleFunc("/webauthn/begin_attestation", wfirewall.beginAttestation).Methods("POST")
-	r.HandleFunc("/webauthn/disable", wfirewall.disableWebauthn).Methods("POST")
-
-	r.HandleFunc("/{username}/{reponame}/settings", wfirewall.repoSettings).Methods("POST")
-	r.HandleFunc("/user/settings/ssh", wfirewall.webauthnSecure(wfirewall.addSSHKey)).Methods("POST")
-	r.HandleFunc("/user/settings/ssh/delete", wfirewall.webauthnSecure(wfirewall.deleteSSHKey)).Methods("POST")
-	r.HandleFunc("/user/settings", wfirewall.webauthnSecure(wfirewall.userProfileUpdate)).Methods("POST")
-	r.HandleFunc("/user/settings/email", wfirewall.userSettingsEmail).Methods("POST")
-	r.HandleFunc("/user/settings/password", wfirewall.webauthnSecure(wfirewall.passwordChange)).Methods("POST")
-	r.HandleFunc("/user/settings/repositories/leave", wfirewall.webauthnSecure(wfirewall.leaveRepository)).Methods("POST")
-	r.HandleFunc("/user/settings/applications/delete", wfirewall.webauthnSecure(wfirewall.deleteApplicationToken)).Methods("POST")
-	r.HandleFunc("/{username}/{repo}/releases/new", wfirewall.webauthnSecure(wfirewall.publishNewRelease)).Methods("POST")
-	r.HandleFunc("/{username}/{repo}/settings/hooks/delete", wfirewall.webauthnSecure(wfirewall.deleteWebhook)).Methods("POST")
+	// TODO
 
 	// Catch all other requests and simply proxy them onward
-	r.PathPrefix("/").HandlerFunc(wfirewall.proxyRequest).Methods("GET", "POST")
+	r.PathPrefix("/api/").HandlerFunc(wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST")
 
 	// Start up the server
 	log.Info("Starting up server on port: %d", reverseProxyPort)
