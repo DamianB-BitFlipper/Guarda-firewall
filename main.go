@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"reflect"
-	"strconv"
 	"strings"
 
 	"github.com/dgrijalva/jwt-go"
@@ -360,7 +359,7 @@ func (proxy *WebauthnFirewall) webauthnSecure(
 		proxy.preamble(w, r)
 
 		// Retrieve the `userID` associated with the current session
-		userID, err := userIDFromSession(r)
+		userID, err := userIDFromJWT(r)
 		if err != nil {
 			log.Error("%v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -380,12 +379,15 @@ func (proxy *WebauthnFirewall) webauthnSecure(
 				return
 			}
 
-			// Parse the form-data to retrieve the `http.Request` information
-			assertion := r.FormValue("assertion")
-			if assertion == "" {
-				errText := "Invalid form-data parameters"
-				log.Error("%v", errText)
-				http.Error(w, errText, http.StatusInternalServerError)
+			// Parse the JSON `http.Request`
+			var reqBody struct {
+				Assertion string `json:"assertion"`
+			}
+
+			err = json.NewDecoder(r.Body).Decode(&reqBody)
+			if err != nil {
+				log.Error("%v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 
@@ -398,7 +400,7 @@ func (proxy *WebauthnFirewall) webauthnSecure(
 			}
 
 			// Check the webauthn assertion for this operation
-			err = checkWebauthnAssertion(r, db.QueryByUserID(userID), extensions, assertion)
+			err = checkWebauthnAssertion(r, db.QueryByUserID(userID), extensions, reqBody.Assertion)
 			if err != nil {
 				log.Error("%v", err)
 				http.Error(w, err.Error(), http.StatusBadRequest)
@@ -465,7 +467,6 @@ func (proxy *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// userID, err := strconv.ParseInt(r.FormValue("userID"), 10, 64)
 	userID, err := userIDFromJWT(r)
 	if err != nil {
 		log.Error("%v", err)
@@ -800,274 +801,19 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 	w.Write(json_response)
 }
 
-func (proxy *WebauthnFirewall) deleteRepositoryHelper(r *http.Request) (protocol.AuthenticationExtensions, error) {
-	// Get the `username` and `reponame` variables passed in the url
-	// used for the transaction string verification
-	vars := mux.Vars(r)
-	username := vars["username"]
-	reponame := vars["reponame"]
-
+func (proxy *WebauthnFirewall) deleteComment(r *http.Request) (protocol.AuthenticationExtensions, error) {
 	// Create the extension to verify against
 	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = fmt.Sprintf("Confirm repository delete: %s/%s", username, reponame)
-
-	return extensions, nil
-}
-
-func (proxy *WebauthnFirewall) repoSettings(w http.ResponseWriter, r *http.Request) {
-	// Instantiate a `RequestRefiller` since `r` will be read multiple times
-	reqRefill, err := NewRequestRefiller(r)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Parse the form-data to retrieve the `http.Request` information
-	action := r.FormValue("action")
-	if action == "" {
-		errText := "Invalid form-data parameters"
-		log.Error("%v", errText)
-		http.Error(w, errText, http.StatusInternalServerError)
-		return
-	}
-
-	// Refill the `request` data before handling onward
-	reqRefill.Refill()
-
-	var handlerFn func(http.ResponseWriter, *http.Request)
-
-	switch action {
-	case "delete":
-		// Handle deletion separately
-		handlerFn = proxy.webauthnSecure(proxy.deleteRepositoryHelper)
-	default:
-		// Proxy all other requests
-		handlerFn = proxy.proxyRequest
-	}
-
-	// Handle this request according to the set `handlerFn` function
-	handlerFn(w, r)
-	return
-}
-
-func (proxy *WebauthnFirewall) addSSHKey(r *http.Request) (protocol.AuthenticationExtensions, error) {
-	sshKeyName := r.FormValue("title")
-	if sshKeyName == "" {
-		return nil, fmt.Errorf("Invalid form-data parameters")
-	}
-
-	// Create the extension to verify against
-	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = fmt.Sprintf("Add SSH key named: %v", sshKeyName)
-
-	return extensions, nil
-}
-
-func (proxy *WebauthnFirewall) deleteSSHKey(r *http.Request) (protocol.AuthenticationExtensions, error) {
-	// Get the full `sshKey` data from the `sshKeyID` located in the form
-	sshKeyID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
-	if err != nil {
-		return nil, err
-	}
-
-	sshKey, err := sshKeyFromSSHKeyID(sshKeyID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create the extension to verify against
-	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = fmt.Sprintf("Delete SSH key named: %v", sshKey.Name)
+	extensions["txAuthSimple"] = "Confirm comment delete"
 
 	// Success!
 	return extensions, nil
 }
 
-func (proxy *WebauthnFirewall) userProfileUpdate(r *http.Request) (protocol.AuthenticationExtensions, error) {
-	// Parse the form-data to retrieve the `http.Request` information
-	username := r.FormValue("name")
-	email := r.FormValue("email")
-	if username == "" || email == "" {
-		return nil, fmt.Errorf("Invalid form-data parameters")
-	}
-
+func (proxy *WebauthnFirewall) deleteArticle(r *http.Request) (protocol.AuthenticationExtensions, error) {
 	// Create the extension to verify against
 	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = fmt.Sprintf("Confirm profile details: username %v email %v", username, email)
-
-	// Success!
-	return extensions, nil
-}
-
-func (proxy *WebauthnFirewall) setPrimaryEmailHelper(r *http.Request) (protocol.AuthenticationExtensions, error) {
-	// Get the full `email` data from the `emailID` located in the form
-	emailID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
-	if err != nil {
-		return nil, err
-	}
-
-	email, err := emailFromEmailID(emailID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create the extension to verify against
-	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = fmt.Sprintf("Confirm new primary email: %v", email.Email)
-
-	// Success!
-	return extensions, nil
-}
-
-func (proxy *WebauthnFirewall) userSettingsEmail(w http.ResponseWriter, r *http.Request) {
-	// Instantiate a `RequestRefiller` since `r` will be read multiple times
-	reqRefill, err := NewRequestRefiller(r)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Parse the form-data to retrieve the `http.Request` information
-	action := r.FormValue("_method")
-
-	// Refill the `request` data before handling onward
-	reqRefill.Refill()
-
-	var handlerFn func(http.ResponseWriter, *http.Request)
-
-	switch action {
-	case "PRIMARY":
-		// Handle primary email separately
-		handlerFn = proxy.webauthnSecure(proxy.setPrimaryEmailHelper)
-	default:
-		// Proxy all other requests
-		handlerFn = proxy.proxyRequest
-	}
-
-	// Handle this request according to the set `handlerFn` function
-	handlerFn(w, r)
-	return
-}
-
-func (proxy *WebauthnFirewall) passwordChange(r *http.Request) (protocol.AuthenticationExtensions, error) {
-	// Create the extension to verify against
-	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = "Confirm password change"
-
-	// Success!
-	return extensions, nil
-}
-
-func (proxy *WebauthnFirewall) leaveRepository(r *http.Request) (protocol.AuthenticationExtensions, error) {
-	// Get the full `repo` data from the `repoID` located in the form
-	repoID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
-	if err != nil {
-		return nil, err
-	}
-
-	repo, err := repoFromRepoID(repoID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create the extension to verify against
-	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = fmt.Sprintf("Leave repository named: %v", repo.Name)
-
-	// Success!
-	return extensions, nil
-}
-
-func (proxy *WebauthnFirewall) deleteApplicationToken(r *http.Request) (protocol.AuthenticationExtensions, error) {
-	// Get the full `appToken` data from the `appTokenID` located in the form
-	appTokenID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
-	if err != nil {
-		return nil, err
-	}
-
-	// TODO: This is repeated. Already done in parent `webauthnSecure` function
-	// Retrieve the `userID` associated with the current session
-	userID, err := userIDFromSession(r)
-	if err != nil {
-		return nil, err
-	}
-
-	appToken, err := appTokenFromAppTokenID(userID, appTokenID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create the extension to verify against
-	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = fmt.Sprintf("Delete App named: %v", appToken.Name)
-
-	// Success!
-	return extensions, nil
-}
-
-func (proxy *WebauthnFirewall) publishNewRelease(r *http.Request) (protocol.AuthenticationExtensions, error) {
-	// Parse the form-data to retrieve the `http.Request` information
-	title := r.FormValue("title")
-	if title == "" {
-		return nil, fmt.Errorf("Invalid form-data parameters")
-	}
-
-	// Get the names of the `attachments` being uploaded
-	uuids := r.Form["files"]
-	attachments := make([]*Attachment, len(uuids))
-	for idx, uuid := range uuids {
-		// Retrieve the `Attachment` struct for the respective `uuid`
-		attachment, err := attachmentFromAttachmentID(uuid)
-		if err != nil {
-			return nil, err
-		}
-		attachments[idx] = attachment
-	}
-
-	// Create the authentication text
-	authText := fmt.Sprintf("Publish release named: %v!", title)
-
-	// Only include the attachment `Name`s if they exist
-	if len(attachments) != 0 {
-		// Convert the `attachments` to a string to be displayed
-		fileNames := make([]string, len(attachments))
-		for idx, attachment := range attachments {
-			fileNames[idx] = attachment.Name
-		}
-
-		authText += fmt.Sprintf("\nFile names: %s!", strings.Join(fileNames, ", "))
-	}
-
-	// Create the extension to verify against
-	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = authText
-
-	// Success!
-	return extensions, nil
-}
-
-func (proxy *WebauthnFirewall) deleteWebhook(r *http.Request) (protocol.AuthenticationExtensions, error) {
-	// Get the full `webhook` data from the `webhookID` located in the form
-	webhookID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get the `username` and `repo` variables passed in the url
-	vars := mux.Vars(r)
-	username := vars["username"]
-	repo := vars["repo"]
-
-	webhook, err := webhookFromRepoWebhookID(username, repo, webhookID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create the extension to verify against
-	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = fmt.Sprintf("Delete webhook for: URL %v", webhook.URL)
+	extensions["txAuthSimple"] = "Confirm article delete"
 
 	// Success!
 	return extensions, nil
@@ -1087,7 +833,7 @@ func main() {
 	// Register the HTTP routes
 	r := mux.NewRouter()
 
-	// Webauthn routes
+	// Infrastructure Webauthn routes
 	r.HandleFunc("/api/webauthn/is_enabled/{user}", wfirewall.optionsHandler("GET")).Methods("OPTIONS")
 	r.HandleFunc("/api/webauthn/is_enabled/{user}", wfirewall.webauthnIsEnabled).Methods("GET")
 
@@ -1109,11 +855,15 @@ func main() {
 	r.HandleFunc("/api/webauthn/disable", wfirewall.optionsHandler("POST")).Methods("OPTIONS")
 	r.HandleFunc("/api/webauthn/disable", wfirewall.disableWebauthn).Methods("POST")
 
-	// Proxy routes
-	// TODO
+	// Webauthn secured routes
+	r.HandleFunc("/api/articles/{slug}/comments/{comment_id}", wfirewall.optionsHandler("DELETE")).Methods("OPTIONS")
+	r.HandleFunc("/api/articles/{slug}/comments/{comment_id}", wfirewall.webauthnSecure(wfirewall.deleteComment)).Methods("DELETE")
+
+	r.HandleFunc("/api/articles/{slug}", wfirewall.optionsHandler("DELETE", "GET")).Methods("OPTIONS")
+	r.HandleFunc("/api/articles/{slug}", wfirewall.webauthnSecure(wfirewall.deleteArticle)).Methods("DELETE")
 
 	// Catch all other requests and simply proxy them onward
-	r.PathPrefix("/api/").HandlerFunc(wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST")
+	r.PathPrefix("/api/").HandlerFunc(wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST", "PUT", "DELETE")
 
 	// Start up the server
 	log.Info("Starting up server on port: %d", reverseProxyPort)
