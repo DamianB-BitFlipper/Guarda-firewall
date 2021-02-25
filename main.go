@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/dgrijalva/jwt-go"
@@ -82,137 +83,55 @@ func userIDFromJWT(r *http.Request) (int64, error) {
 	return int64(userID), nil
 }
 
-func userIDFromSession(r *http.Request) (int64, error) {
-	// Get the UserID associated with the sessionID in the cookies. This is to assure that the
-	// server and the firewall are referencing the same user during the webauthn check
-	url := fmt.Sprintf("%s/server_context/session2user", backendAddress)
-	userIDReq, err := http.NewRequest("GET", url, nil)
+type Comment struct {
+	ID   uint   `json:"id"`
+	Body string `json:"body"`
+}
+
+func commentFromCommentID(slug string, commentID uint) (*Comment, error) {
+	// Construct the URL to retrieve all of the comments for a given `slug`
+	url := fmt.Sprintf("%s/api/articles/%s/comments", backendAddress, slug)
+
+	var comments struct {
+		Comments []Comment `json:"comments"`
+	}
+
+	err := tool.GetRequestJSON(url, &comments)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	// Pass on the cookies from `r` to `userIDReq`, which will include the cookie with the `sessionID`
-	for _, cookie := range r.Cookies() {
-		userIDReq.AddCookie(cookie)
+	// Search for the comment with `commentID`
+	for _, comment := range comments.Comments {
+		if comment.ID == commentID {
+			return &comment, nil
+		}
 	}
 
-	var sessionInfo struct {
-		Ok     bool  `json:"ok"`
-		UserID int64 `json:"uid"`
-	}
-	err = tool.PerformRequestJSON(userIDReq, &sessionInfo)
-	if err != nil {
-		return 0, err
-	}
-
-	if !sessionInfo.Ok {
-		return 0, fmt.Errorf("Unable to retrieve the userID for this cookie session")
-	}
-
-	// Success!
-	return sessionInfo.UserID, nil
+	// Comment not found
+	return nil, fmt.Errorf("Comment ID %d not found", commentID)
 }
 
-func itemFromIDs(itemType string, itemStruct interface{}, args ...interface{}) error {
-	urlArgs := make([]string, len(args))
-	for idx, v := range args {
-		urlArgs[idx] = fmt.Sprintf("%v", v)
+type Article struct {
+	Slug  string `json:"slug"`
+	Title string `json:"title"`
+}
+
+func articleFromArticleSlug(slug string) (*Article, error) {
+	// Construct the URL to retrieve the article associated with `slug`
+	url := fmt.Sprintf("%s/api/articles/%s", backendAddress, slug)
+
+	var article struct {
+		Article Article `json:"article"`
 	}
 
-	// Construct the URL to retrieve the item from the input item `args`
-	url := fmt.Sprintf("%s/server_context/%s/%s", backendAddress, itemType, strings.Join(urlArgs, "/"))
-	return tool.GetRequestJSON(url, itemStruct)
-}
-
-type SSHKey struct {
-	Name    string
-	Content string
-}
-
-func sshKeyFromSSHKeyID(sshKeyID int64) (*SSHKey, error) {
-	publicKey := new(SSHKey)
-	err := itemFromIDs("ssh_key", publicKey, sshKeyID)
+	err := tool.GetRequestJSON(url, &article)
 	if err != nil {
 		return nil, err
 	}
 
 	// Success!
-	return publicKey, nil
-}
-
-type Email struct {
-	Email string
-}
-
-func emailFromEmailID(emailID int64) (*Email, error) {
-	email := new(Email)
-	err := itemFromIDs("email", email, emailID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Success!
-	return email, nil
-}
-
-type Repo struct {
-	Name string
-}
-
-func repoFromRepoID(repoID int64) (*Repo, error) {
-	repo := new(Repo)
-	err := itemFromIDs("repository", repo, repoID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Success!
-	return repo, nil
-}
-
-type AppToken struct {
-	Name string
-}
-
-func appTokenFromAppTokenID(userID, id int64) (*AppToken, error) {
-	appToken := new(AppToken)
-	err := itemFromIDs("app_token", appToken, userID, id)
-	if err != nil {
-		return nil, err
-	}
-
-	// Success!
-	return appToken, nil
-}
-
-type Attachment struct {
-	Name string
-}
-
-func attachmentFromAttachmentID(uuid string) (*Attachment, error) {
-	attachment := new(Attachment)
-	err := itemFromIDs("attachment", attachment, uuid)
-	if err != nil {
-		return nil, err
-	}
-
-	// Success!
-	return attachment, nil
-}
-
-type Webhook struct {
-	URL string
-}
-
-func webhookFromRepoWebhookID(username, repo string, webhookID int64) (*Webhook, error) {
-	webhook := new(Webhook)
-	err := itemFromIDs("repo_webhook", webhook, username, repo, webhookID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Success!
-	return webhook, nil
+	return &article.Article, nil
 }
 
 func checkWebauthnAssertion(
@@ -802,18 +721,40 @@ func (proxy *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *http.Re
 }
 
 func (proxy *WebauthnFirewall) deleteComment(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Extract the context info located in the URL
+	vars := mux.Vars(r)
+	slug := vars["slug"]
+	commentID, err := strconv.ParseUint(vars["comment_id"], 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	comment, err := commentFromCommentID(slug, uint(commentID))
+	if err != nil {
+		return nil, err
+	}
+
 	// Create the extension to verify against
 	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = "Confirm comment delete"
+	extensions["txAuthSimple"] = fmt.Sprintf("Confirm comment delete: %v", comment.Body)
 
 	// Success!
 	return extensions, nil
 }
 
 func (proxy *WebauthnFirewall) deleteArticle(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Extract the context info located in the URL
+	vars := mux.Vars(r)
+	slug := vars["slug"]
+
+	article, err := articleFromArticleSlug(slug)
+	if err != nil {
+		return nil, err
+	}
+
 	// Create the extension to verify against
 	extensions := make(protocol.AuthenticationExtensions)
-	extensions["txAuthSimple"] = "Confirm article delete"
+	extensions["txAuthSimple"] = fmt.Sprintf("Confirm article delete: Name %s", article.Title)
 
 	// Success!
 	return extensions, nil
