@@ -134,6 +134,37 @@ func articleFromArticleSlug(slug string) (*Article, error) {
 	return &article.Article, nil
 }
 
+type CurrentUser struct {
+	Username string `json:"username"`
+	Email    string `json:"email"`
+}
+
+func getCurrentUser(r *http.Request) (*CurrentUser, error) {
+	// Construct the URL to retrieve the article associated with `slug`
+	url := fmt.Sprintf("%s/api/user", backendAddress)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// Copy over the JWT token located in the `Authorization` header
+	authorizationString := r.Header.Get("Authorization")
+	req.Header.Set("Authorization", authorizationString)
+
+	var currentUser struct {
+		User CurrentUser `json:"user"`
+	}
+
+	err = tool.PerformRequestJSON(req, &currentUser)
+	if err != nil {
+		return nil, err
+	}
+
+	// Success!
+	return &currentUser.User, nil
+}
+
 func checkWebauthnAssertion(
 	r *http.Request,
 	query db.WebauthnQuery,
@@ -310,6 +341,9 @@ func (proxy *WebauthnFirewall) webauthnSecure(
 				return
 			}
 
+			// Refill because the `getTxExtensions` may read the request body
+			reqRefill.Refill()
+
 			// Get the `extensions` to verify against
 			extensions, err := getTxExtensions(r)
 			if err != nil {
@@ -319,13 +353,14 @@ func (proxy *WebauthnFirewall) webauthnSecure(
 			}
 
 			// Check the webauthn assertion for this operation
-			err = checkWebauthnAssertion(r, db.QueryByUserID(userID), extensions, reqBody.Assertion)
-			if err != nil {
-				log.Error("%v", err)
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
+			if extensions != nil {
+				err = checkWebauthnAssertion(r, db.QueryByUserID(userID), extensions, reqBody.Assertion)
+				if err != nil {
+					log.Error("%v", err)
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
 			}
-
 			// Refill the `request` data before proxying onward
 			reqRefill.Refill()
 		}
@@ -760,6 +795,48 @@ func (proxy *WebauthnFirewall) deleteArticle(r *http.Request) (protocol.Authenti
 	return extensions, nil
 }
 
+func (proxy *WebauthnFirewall) updateUser(r *http.Request) (protocol.AuthenticationExtensions, error) {
+	// Parse the JSON `http.Request` now read into `data`
+	var reqBody struct {
+		User struct {
+			Bio      string `json:"bio"`
+			Email    string `json:"email"`
+			Image    string `json:"image"`
+			Username string `json:"username"`
+			Password string `json:",omitempty"`
+		} `json:"user"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	currentUser, err := getCurrentUser(r)
+	if err != nil {
+		return nil, err
+	}
+
+	// Begin with no `extensions`
+	var extensions protocol.AuthenticationExtensions = nil
+
+	// Only use authentication if the username, email or password are being changed
+	if reqBody.User.Username != currentUser.Username ||
+		reqBody.User.Email != currentUser.Email ||
+		reqBody.User.Password != "" {
+
+		// TODO: Include the password somehow in the authentication text
+		//
+		// Set the `extensions` to verify against
+		extensions = make(protocol.AuthenticationExtensions)
+		extensions["txAuthSimple"] =
+			fmt.Sprintf("Confirm new user details:\n\tusername %s\n\temail %s", reqBody.User.Username, reqBody.User.Email)
+	}
+
+	// Success!
+	return extensions, nil
+}
+
 // TODO: A lot of these functions can be put into their own files such as the registration, log in, txAuthn handlers, util functions
 func main() {
 	// Initialize a new webauthn firewall
@@ -802,6 +879,9 @@ func main() {
 
 	r.HandleFunc("/api/articles/{slug}", wfirewall.optionsHandler("DELETE", "GET")).Methods("OPTIONS")
 	r.HandleFunc("/api/articles/{slug}", wfirewall.webauthnSecure(wfirewall.deleteArticle)).Methods("DELETE")
+
+	r.HandleFunc("/api/user", wfirewall.optionsHandler("GET", "PUT")).Methods("OPTIONS")
+	r.HandleFunc("/api/user", wfirewall.webauthnSecure(wfirewall.updateUser)).Methods("PUT")
 
 	// Catch all other requests and simply proxy them onward
 	r.PathPrefix("/api/").HandlerFunc(wfirewall.proxyRequest).Methods("OPTIONS", "GET", "POST", "PUT", "DELETE")
