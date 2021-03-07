@@ -2,3 +2,5 @@ webauthn-firewall.db
 set_session_key.sh
 server.crt
 server.key
+
+my_*
