@@ -12,6 +12,8 @@ import (
 	"github.com/gorilla/mux"
 	log "unknwon.dev/clog/v2"
 
+	"github.com/JSmith-BitFlipper/webauthn-firewall-proxy/db"
+
 	"webauthn/webauthn"
 	"webauthn_utils/session"
 )
@@ -68,6 +70,12 @@ func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
 	})
 	if err != nil {
 		panic("Unable to initialize Webauthn API: " + err.Error())
+	}
+
+	// Initialize the database for the firewall
+	log.Info("Starting up database")
+	if err = db.Init(); err != nil {
+		panic("Unable to initialize database: " + err.Error())
 	}
 
 	origin, _ := url.Parse(config.BackendAddress)
