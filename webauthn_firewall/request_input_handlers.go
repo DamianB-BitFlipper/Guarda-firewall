@@ -2,13 +2,14 @@ package webauthn_firewall
 
 import (
 	"fmt"
-	"net/http"
 	"strconv"
 
 	"github.com/gorilla/mux"
 )
 
-func GetFormInput(r *http.Request, args ...string) (string, error) {
+type getInputFnType func(r *ExtendedRequest, args ...string) (string, error)
+
+func GetFormInput(r *ExtendedRequest, args ...string) (string, error) {
 	// Sanity check the input
 	if r == nil {
 		err := fmt.Errorf("Nil request received")
@@ -22,7 +23,7 @@ func GetFormInput(r *http.Request, args ...string) (string, error) {
 	}
 
 	// Retrieve the respective form value
-	val := r.FormValue(args[0])
+	val := r.Request.FormValue(args[0])
 	if val == "" {
 		err := fmt.Errorf("Invalid form-data parameters")
 		return "", err
@@ -32,7 +33,7 @@ func GetFormInput(r *http.Request, args ...string) (string, error) {
 	return val, nil
 }
 
-func GetURLInput(r *http.Request, args ...string) (string, error) {
+func GetURLInput(r *ExtendedRequest, args ...string) (string, error) {
 	// Sanity check the input
 	if r == nil {
 		err := fmt.Errorf("Nil request received")
@@ -46,19 +47,19 @@ func GetURLInput(r *http.Request, args ...string) (string, error) {
 	}
 
 	// Get the URL input for `args[0]`
-	val := mux.Vars(r)[args[0]]
+	val := mux.Vars(r.Request)[args[0]]
 
 	// Success!
 	return val, nil
 }
 
-func (r *ExtendedRequest) getInput_WithErr_Helper(getInputFn func(*http.Request, ...string) (string, error), args ...string) (string, error) {
+func (r *ExtendedRequest) getInput_WithErr_Helper(getInputFn getInputFnType, args ...string) (string, error) {
 	// If an error has already occured, pass it onward
 	if r.err != nil {
 		return "", r.err
 	}
 
-	val, err := getInputFn(r.Request, args...)
+	val, err := getInputFn(r, args...)
 
 	// If the `err != nil`, record the error and return
 	if err != nil {
@@ -70,7 +71,7 @@ func (r *ExtendedRequest) getInput_WithErr_Helper(getInputFn func(*http.Request,
 	return val, err
 }
 
-func (r *ExtendedRequest) getInputInt64_WithErr_Helper(getInputFn func(*http.Request, ...string) (string, error), args ...string) (int64, error) {
+func (r *ExtendedRequest) getInputInt64_WithErr_Helper(getInputFn getInputFnType, args ...string) (int64, error) {
 	val, err := r.getInput_WithErr_Helper(getInputFn, args...)
 	if err != nil {
 		// The `r.err` was set by the helper function

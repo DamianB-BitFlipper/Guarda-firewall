@@ -16,7 +16,7 @@ type ExtendedRequest struct {
 	data []byte
 
 	GetUserID       func() (int64, error)
-	getInputDefault func(*http.Request, ...string) (string, error)
+	getInputDefault getInputFnType
 
 	err error
 }

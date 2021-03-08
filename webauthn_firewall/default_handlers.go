@@ -230,7 +230,7 @@ func (wfirewall *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *Ex
 	// Prepare the response for a JSON object return
 	wfirewall.prepareJSONResponse(w)
 
-	// Retrieve the `userID` associated with the current session
+	// Retrieve the `userID` associated with the current request
 	userID, err := r.GetUserID()
 	if err != nil {
 		log.Error("%v", err)
@@ -322,7 +322,7 @@ func (wfirewall *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *Ext
 	// Allow transmitting cookies, used by `sessionStore`
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	// Retrieve the `userID` associated with the current session
+	// Retrieve the `userID` associated with the current request
 	userID, err := r.GetUserID()
 	if err != nil {
 		log.Error("%v", err)

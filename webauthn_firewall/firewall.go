@@ -39,7 +39,7 @@ type WebauthnFirewall struct {
 	router *mux.Router
 
 	getUserID       func(*http.Request) (int64, error)
-	getInputDefault func(*http.Request, ...string) (string, error)
+	getInputDefault getInputFnType
 
 	verbose bool
 }
@@ -53,7 +53,7 @@ type WebauthnFirewallConfig struct {
 	ReverseProxyAddress string
 
 	GetUserID       func(*WebauthnFirewall, *http.Request) (int64, error)
-	GetInputDefault func(*http.Request, ...string) (string, error)
+	GetInputDefault getInputFnType
 
 	LoginURL string
 

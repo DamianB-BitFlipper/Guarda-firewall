@@ -71,10 +71,10 @@ func main() {
 	// Initialize a new webauthn firewall
 	wfirewall := wf.NewWebauthnFirewall(wfirewallConfigs)
 
-	// wfirewall.Secure("POST", "/user/settings/ssh", wfirewall.Authn(
-	// 	"Add SSH key named: %v",
-	// 	wf.Get("title"),
-	// ))
+	wfirewall.Secure("POST", "/user/settings/ssh", wfirewall.Authn(
+		"Add SSH key named: %v",
+		wf.Get("title"),
+	))
 
 	wfirewall.ListenAndServeTLS("server.crt", "server.key")
 }

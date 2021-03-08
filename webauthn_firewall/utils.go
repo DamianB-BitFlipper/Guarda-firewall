@@ -82,3 +82,62 @@ func checkWebauthnAssertion(
 	// Success!
 	return nil
 }
+
+func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedRequest) string) func(http.ResponseWriter, *ExtendedRequest) {
+	return func(w http.ResponseWriter, r *ExtendedRequest) {
+		// Call the firewall preamble
+		wfirewall.preamble(w, r)
+
+		// Retrieve the `userID` associated with the current request
+		userID, err := r.GetUserID()
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// See if the user has webauthn enabled
+		isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUserID(userID))
+
+		// Perform a webauthn check if webauthn is enabled for this user
+		if isEnabled {
+			// Parse the form-data to retrieve the `http.Request` information
+			assertion, err := r.Get_WithErr("assertion")
+			if err != nil {
+				log.Error("%v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			// Get the `authnText` to verify against
+			authnText := getAuthnText(r)
+
+			// Check if there were errors
+			if r.err != nil {
+				log.Error("%v", r.err)
+				http.Error(w, r.err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			// Populate the `extensions` with the `authnText`
+			extensions := make(protocol.AuthenticationExtensions)
+			extensions["txAuthSimple"] = authnText
+
+			// Check the webauthn assertion for this operation
+			err = checkWebauthnAssertion(r, db.QueryByUserID(userID), extensions, assertion)
+			if err != nil {
+				log.Error("%v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			// Refill the `request` data before proxying onward
+			r.Refill()
+		}
+
+		// Once the webauthn check passed, pass the request onward to
+		// the server to check the username and password
+		wfirewall.ServeHTTP(w, r.Request)
+		return
+	}
+}
