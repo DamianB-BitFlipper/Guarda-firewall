@@ -3,8 +3,6 @@ package webauthn_firewall
 import (
 	"fmt"
 	"net/http"
-
-	log "unknwon.dev/clog/v2"
 )
 
 type scopeContainer map[string]interface{}
@@ -107,30 +105,26 @@ func GetUserID() getInput {
 // Make sure `getInput` implements `dslInterface`
 var _ dslInterface = getInput{}
 
-type setContextVar struct {
-	varName string
-	ops     []dslInterface
+type getContext struct {
+	contextName string
+	subFields   []string
+	ops         []dslInterface
 }
 
-func (s setContextVar) retrieve(_ *ExtendedRequest, _ scopeContainer) interface{} {
-	// The `retrieve` does nothing
-	return nil
-}
-
-func (s setContextVar) execute(r *ExtendedRequest, scope scopeContainer, _ *[]interface{}) {
-	// Look up the respective `contextGetter` function according to the `varName`
-	contextGetter, ok := r.contextGetters[s.varName]
+func (g getContext) retrieve(r *ExtendedRequest, scope scopeContainer) interface{} {
+	// Look up the respective `contextGetter` function according to the `contextName`
+	contextGetter, ok := r.contextGetters[g.contextName]
 
 	if !ok {
 		// Set the current `r.err`
-		r.err = fmt.Errorf("Context type does not have getter function: %s", s.varName)
-		return
+		r.err = fmt.Errorf("Context type does not have getter function: %s", g.contextName)
+		return r.err
 	}
 
 	// Retrieve and store the values of every operation
-	args := make([]interface{}, len(s.ops))
+	args := make([]interface{}, len(g.ops))
 	for i := range args {
-		args[i] = s.ops[i].retrieve(r, scope)
+		args[i] = g.ops[i].retrieve(r, scope)
 	}
 
 	// Perform the context get operation
@@ -139,22 +133,47 @@ func (s setContextVar) execute(r *ExtendedRequest, scope scopeContainer, _ *[]in
 	if err != nil {
 		// Set the current `r.err`
 		r.err = err
+		return r.err
+	}
+
+	for _, subField := range g.subFields {
+		val = val.(StructContext)[subField]
+	}
+
+	// Success!
+	return val
+}
+
+func (g getContext) execute(r *ExtendedRequest, scope scopeContainer, formatVars *[]interface{}) {
+	val := g.retrieve(r, scope)
+
+	// Check if there was an error during `retrieve`
+	if r.err != nil {
 		return
 	}
 
-	// Set the new `val` to the variable `varName` in the lexical `scope`
-	scope[s.varName] = val
+	// Since this is a `get` operation, it should append to the `formatVars`
+	*formatVars = append(*formatVars, val)
 }
 
-func SetContextVar(name string, ops ...dslInterface) setContextVar {
-	return setContextVar{
-		varName: name,
-		ops:     ops,
+func (g getContext) SubField(field string) getContext {
+	return getContext{
+		contextName: g.contextName,
+		subFields:   append(g.subFields, field),
+		ops:         g.ops,
 	}
 }
 
-// Make sure `setContextVar` implements `dslInterface`
-var _ dslInterface = setContextVar{}
+func GetContext(name string, ops ...dslInterface) getContext {
+	return getContext{
+		contextName: name,
+		subFields:   []string{},
+		ops:         ops,
+	}
+}
+
+// Make sure `getContext` implements `dslInterface`
+var _ dslInterface = getContext{}
 
 type getVar struct {
 	varName     string
@@ -167,7 +186,7 @@ func (g getVar) retrieve(r *ExtendedRequest, scope scopeContainer) interface{} {
 
 	// Check if there was an error during `narrowScope`
 	if r.err != nil {
-		return nil
+		return r.err
 	}
 
 	// Get the `val` at `varName`
@@ -176,7 +195,7 @@ func (g getVar) retrieve(r *ExtendedRequest, scope scopeContainer) interface{} {
 	if !ok {
 		// Set the current `r.err`
 		r.err = fmt.Errorf("Variable not found in scope: %s", g.varName)
-		return nil
+		return r.err
 	}
 
 	// Success!
@@ -211,8 +230,6 @@ func (g getVar) SubField(field string) getVar {
 			scope, ok := scope[g.varName].(scopeContainer)
 
 			if !ok {
-				log.Info("LOLOL %v", scope)
-
 				// Set the current `r.err`
 				r.err = fmt.Errorf("Variable not found in scope: %s", g.varName)
 				return nil
@@ -233,7 +250,44 @@ func GetVar(name string) getVar {
 	}
 }
 
-// TODO:
+type setVar struct {
+	varName string
+	valOp   dslInterface
+}
+
+func (s setVar) retrieve(_ *ExtendedRequest, _ scopeContainer) interface{} {
+	// The `retrieve` does nothing
+	return nil
+}
+
+func (s setVar) execute(r *ExtendedRequest, scope scopeContainer, _ *[]interface{}) {
+	// Extract the `val` of `s.valOp`
+	val := s.valOp.retrieve(r, scope)
+
+	// Check if there was an error during `retrieve`
+	if r.err != nil {
+		return
+	}
+
+	// Set the new `scope` variable
+	scope[s.varName] = val
+}
+
+func SetVar(name string, val dslInterface) setVar {
+	return setVar{
+		varName: name,
+		valOp:   val,
+	}
+}
+
+func SetContextVar(name string, ops ...dslInterface) setVar {
+	return setVar{
+		varName: name,
+		valOp:   GetContext(name, ops...),
+	}
+}
+
+// TODO: Make SetContextVar a combination of SetVar and GetContext (return type getVar)
 // Also make sure you are handling errors correctly for custom handler functions
 
 func (wfirewall *WebauthnFirewall) Authn(formatString string, ops ...dslInterface) func(http.ResponseWriter, *ExtendedRequest) {

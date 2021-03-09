@@ -58,10 +58,6 @@ func userIDFromSession(r *http.Request) (int64, error) {
 	return sessionInfo.UserID, nil
 }
 
-//
-// Context functions
-//
-
 func itemFromIDs(itemType string, nargs int) func(...interface{}) (interface{}, error) {
 	return func(args ...interface{}) (interface{}, error) {
 		// Sanity check the input
@@ -154,6 +150,17 @@ func main() {
 		wf.SetContextVar("webhook", wf.Get_URL("username"), wf.Get_URL("repo"), wf.Get("id")),
 		wf.GetVar("webhook").SubField("URL"),
 	))
+
+	// An exmaple of the extend of this DSL. Equivalent to above
+	//
+	// firewall.Secure("POST", "/{username}/{repo}/settings/hooks/delete", firewall.Authn(
+	// 	"Delete webhook for: URL %v",
+	// 	wf.SetVar("username", wf.Get_URL("username")),
+	// 	wf.SetVar("repo", wf.Get_URL("repo")),
+	// 	wf.SetVar("id", wf.Get("id")),
+	// 	wf.SetVar("webhook", wf.GetContext("webhook", wf.GetVar("username"), wf.GetVar("repo"), wf.GetVar("id"))),
+	// 	wf.GetVar("webhook").SubField("URL"),
+	// ))
 
 	firewall.ListenAndServeTLS("server.crt", "server.key")
 }
