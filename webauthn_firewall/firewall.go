@@ -27,6 +27,9 @@ var (
 	sessionStore *session.Store
 )
 
+type getInputFnType func(r *ExtendedRequest, args ...string) (string, error)
+type ContextGettersType map[string]func(...interface{}) (interface{}, error)
+
 type WebauthnFirewall struct {
 	*httputil.ReverseProxy
 
@@ -40,6 +43,7 @@ type WebauthnFirewall struct {
 
 	getUserID       func(*http.Request) (int64, error)
 	getInputDefault getInputFnType
+	contextGetters  ContextGettersType
 
 	verbose bool
 }
@@ -52,8 +56,9 @@ type WebauthnFirewallConfig struct {
 	BackendAddress      string
 	ReverseProxyAddress string
 
-	GetUserID       func(*WebauthnFirewall, *http.Request) (int64, error)
+	GetUserID       func(*http.Request) (int64, error)
 	GetInputDefault getInputFnType
+	ContextGetters  ContextGettersType
 
 	LoginURL string
 
@@ -101,14 +106,11 @@ func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
 		ReverseProxyAddress: config.ReverseProxyAddress,
 
 		// Set the private fields
+		getUserID:       config.GetUserID,
 		getInputDefault: config.GetInputDefault,
+		contextGetters:  config.ContextGetters,
 
 		verbose: config.Verbose,
-	}
-
-	// Set the `getUserID` function which self-references
-	wfirewall.getUserID = func(r *http.Request) (int64, error) {
-		return config.GetUserID(wfirewall, r)
 	}
 
 	// Set the router to the `wfirewall`
@@ -126,11 +128,6 @@ func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
 	wfirewall.Secure("POST", "/webauthn/begin_attestation", wfirewall.beginAttestation)
 	wfirewall.Secure("POST", "/webauthn/disable", wfirewall.disableWebauthn)
 
-	// Catch all other requests and simply proxy them onward
-	wfirewall.router.PathPrefix("/").
-		HandlerFunc(wfirewall.wrapHandleFn(wfirewall.proxyRequest)).
-		Methods("OPTIONS", "GET", "POST", "PUT", "DELETE")
-
 	return wfirewall
 }
 
@@ -140,6 +137,12 @@ func (wfirewall *WebauthnFirewall) Secure(method, url string, handleFn func(http
 }
 
 func (wfirewall *WebauthnFirewall) ListenAndServeTLS(cert, key string) {
+	// This function gets called once `wfirewall` has been entirely initialized.
+	// Catch all remaining requests and simply proxy them onward
+	wfirewall.router.PathPrefix("/").
+		HandlerFunc(wfirewall.wrapHandleFn(wfirewall.proxyRequest)).
+		Methods("OPTIONS", "GET", "POST", "PUT", "DELETE")
+
 	// Start up the server
 	log.Info("Starting up server on port: %s", wfirewall.ReverseProxyAddress)
 	log.Info("Forwarding HTTP: %s -> %s", wfirewall.ReverseProxyAddress, wfirewall.BackendAddress)

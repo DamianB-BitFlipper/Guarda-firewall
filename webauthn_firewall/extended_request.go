@@ -17,6 +17,7 @@ type ExtendedRequest struct {
 
 	GetUserID       func() (int64, error)
 	getInputDefault getInputFnType
+	contextGetters  ContextGettersType
 
 	err error
 }
@@ -51,6 +52,7 @@ func (wfirewall *WebauthnFirewall) newExtendedRequest(r *http.Request) *Extended
 			return wfirewall.getUserID(r)
 		},
 		getInputDefault: wfirewall.getInputDefault,
+		contextGetters:  wfirewall.contextGetters,
 
 		err: nil,
 	}

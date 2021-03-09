@@ -112,7 +112,7 @@ func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedReq
 			// Get the `authnText` to verify against
 			authnText := getAuthnText(r)
 
-			// Check if there were errors
+			// Check if there were any errors
 			if r.err != nil {
 				log.Error("%v", r.err)
 				http.Error(w, r.err.Error(), http.StatusInternalServerError)

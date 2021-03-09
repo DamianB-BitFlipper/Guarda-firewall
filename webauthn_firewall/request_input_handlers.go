@@ -7,8 +7,6 @@ import (
 	"github.com/gorilla/mux"
 )
 
-type getInputFnType func(r *ExtendedRequest, args ...string) (string, error)
-
 func GetFormInput(r *ExtendedRequest, args ...string) (string, error) {
 	// Sanity check the input
 	if r == nil {
