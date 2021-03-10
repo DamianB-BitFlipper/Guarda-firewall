@@ -41,6 +41,19 @@ func (wfirewall *WebauthnFirewall) proxyRequest(w http.ResponseWriter, r *Extend
 	wfirewall.ServeHTTP(w, r.Request)
 }
 
+func (wfirewall *WebauthnFirewall) ProxyRequest(w http.ResponseWriter, r *ExtendedRequest) {
+	// If an error has already occured, exit now
+	if r.err != nil {
+		log.Error("%v", r.err)
+		http.Error(w, r.err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Refill before proxying onward
+	r.Refill()
+	wfirewall.proxyRequest(w, r)
+}
+
 func checkWebauthnAssertion(
 	r *ExtendedRequest,
 	query db.WebauthnQuery,
@@ -85,6 +98,13 @@ func checkWebauthnAssertion(
 
 func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedRequest) string) func(http.ResponseWriter, *ExtendedRequest) {
 	return func(w http.ResponseWriter, r *ExtendedRequest) {
+		// If an error has already occured, exit now
+		if r.err != nil {
+			log.Error("%v", r.err)
+			http.Error(w, r.err.Error(), http.StatusInternalServerError)
+			return
+		}
+
 		// Call the firewall preamble
 		wfirewall.preamble(w, r)
 
@@ -112,7 +132,7 @@ func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedReq
 			// Get the `authnText` to verify against
 			authnText := getAuthnText(r)
 
-			// Check if there were any errors
+			// Check if there were any errors from `getAuthnText`
 			if r.err != nil {
 				log.Error("%v", r.err)
 				http.Error(w, r.err.Error(), http.StatusInternalServerError)

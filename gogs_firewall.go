@@ -80,6 +80,93 @@ func itemFromIDs(itemType string, nargs int) func(...interface{}) (interface{}, 
 	}
 }
 
+func (firewall *GogsFirewall) repoSettings(w http.ResponseWriter, r *wf.ExtendedRequest) {
+	// Parse the form-data to retrieve the `request` information
+	action := r.Get("action")
+
+	var handlerFn wf.HandlerFnType
+
+	switch action {
+	case "delete":
+		// Handle deletion separately
+		handlerFn = firewall.Authn(
+			"Confirm repository delete: %s/%s",
+			wf.Get_URL("username"),
+			wf.Get_URL("reponame"),
+		)
+	default:
+		// Proxy all other requests
+		handlerFn = firewall.ProxyRequest
+	}
+
+	// Run the `handlerFn`
+	handlerFn(w, r)
+	return
+}
+
+func (firewall *GogsFirewall) userSettingsEmail(w http.ResponseWriter, r *wf.ExtendedRequest) {
+	// Parse the form-data to retrieve the `request` information
+	action := r.Get("_method")
+
+	var handlerFn wf.HandlerFnType
+
+	switch action {
+	case "PRIMARY":
+		// Handle primary email separately
+		handlerFn = firewall.Authn(
+			"Confirm new primary email: %v",
+			wf.SetContextVar("email", wf.Get("id")),
+			wf.GetVar("email").SubField("Email"),
+		)
+	default:
+		// Proxy all other requests
+		handlerFn = firewall.ProxyRequest
+	}
+
+	// Run the `handlerFn`
+	handlerFn(w, r)
+	return
+}
+
+func (firewall *GogsFirewall) publishNewRelease(w http.ResponseWriter, r *wf.ExtendedRequest) {
+	// Parse the form-data to retrieve the `request` information
+	title := r.Get("title")
+
+	// Get the names of the `attachments` being uploaded
+	uuids := r.Request.Form["files"]
+	attachments := make([]wf.StructContext, len(uuids))
+	for idx, uuid := range uuids {
+		// Retrieve the `Attachment` struct for the respective `uuid`
+		attachment, err := r.GetContext("attachment", uuid)
+		if err != nil {
+			log.Error("%v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		attachments[idx] = attachment.(wf.StructContext)
+	}
+
+	// Create the authentication text
+	authText := fmt.Sprintf("Publish release named: %v", title)
+
+	// Only include the attachment `Name`s if they exist
+	if len(attachments) != 0 {
+		// Convert the `attachments` to a string to be displayed
+		fileNames := make([]string, len(attachments))
+		for idx, attachment := range attachments {
+			fileNames[idx] = attachment["Name"].(string)
+		}
+
+		authText += fmt.Sprintf("\nFile names: %s", strings.Join(fileNames, ", "))
+	}
+
+	handlerFn := firewall.Authn(authText)
+
+	// Run the `handlerFn`
+	handlerFn(w, r)
+	return
+}
+
 func main() {
 	firewallConfigs := &wf.WebauthnFirewallConfig{
 		RPDisplayName: "Foobar Corp.",
@@ -92,10 +179,12 @@ func main() {
 		GetUserID:       userIDFromSession,
 		GetInputDefault: wf.GetFormInput,
 		ContextGetters: wf.ContextGettersType{
-			"ssh_key":   itemFromIDs("ssh_key", 1),
-			"repo":      itemFromIDs("repository", 1),
-			"app_token": itemFromIDs("app_token", 2),
-			"webhook":   itemFromIDs("repo_webhook", 3),
+			"ssh_key":    itemFromIDs("ssh_key", 1),
+			"repo":       itemFromIDs("repository", 1),
+			"app_token":  itemFromIDs("app_token", 2),
+			"webhook":    itemFromIDs("repo_webhook", 3),
+			"email":      itemFromIDs("email", 1),
+			"attachment": itemFromIDs("attachment", 1),
 		},
 
 		LoginURL: "/user/login",
@@ -106,7 +195,7 @@ func main() {
 	// Initialize a new webauthn firewall as a `GogsFirewall` to be able to add custom methods
 	firewall := GogsFirewall{wf.NewWebauthnFirewall(firewallConfigs)}
 
-	// firewall.Secure("POST", "/{username}/{reponame}/settings", firewall.repoSettings)
+	firewall.Secure("POST", "/{username}/{reponame}/settings", firewall.repoSettings)
 
 	firewall.Secure("POST", "/user/settings/ssh", firewall.Authn(
 		"Add SSH key named: %v",
@@ -125,7 +214,7 @@ func main() {
 		wf.Get("email"),
 	))
 
-	// wfirewall.Secure("POST", "/user/settings/email", wfirewall.userSettingsEmail)
+	firewall.Secure("POST", "/user/settings/email", firewall.userSettingsEmail)
 
 	firewall.Secure("POST", "/user/settings/password", firewall.Authn(
 		"Confirm password change",
@@ -143,7 +232,7 @@ func main() {
 		wf.GetVar("app_token").SubField("Name"),
 	))
 
-	// wfirewall.Secure("POST", "/{username}/{repo}/releases/new", wfirewall.publishNewRelease)
+	firewall.Secure("POST", "/{username}/{repo}/releases/new", firewall.publishNewRelease)
 
 	firewall.Secure("POST", "/{username}/{repo}/settings/hooks/delete", firewall.Authn(
 		"Delete webhook for: URL %v",
@@ -151,7 +240,7 @@ func main() {
 		wf.GetVar("webhook").SubField("URL"),
 	))
 
-	// An exmaple of the extend of this DSL. Equivalent to above
+	// An exmaple of the extend of this DSL. Equivalent to above Authn
 	//
 	// firewall.Secure("POST", "/{username}/{repo}/settings/hooks/delete", firewall.Authn(
 	// 	"Delete webhook for: URL %v",

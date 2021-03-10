@@ -112,15 +112,6 @@ type getContext struct {
 }
 
 func (g getContext) retrieve(r *ExtendedRequest, scope scopeContainer) interface{} {
-	// Look up the respective `contextGetter` function according to the `contextName`
-	contextGetter, ok := r.contextGetters[g.contextName]
-
-	if !ok {
-		// Set the current `r.err`
-		r.err = fmt.Errorf("Context type does not have getter function: %s", g.contextName)
-		return r.err
-	}
-
 	// Retrieve and store the values of every operation
 	args := make([]interface{}, len(g.ops))
 	for i := range args {
@@ -128,8 +119,7 @@ func (g getContext) retrieve(r *ExtendedRequest, scope scopeContainer) interface
 	}
 
 	// Perform the context get operation
-	val, err := contextGetter(args...)
-
+	val, err := r.GetContext(g.contextName, args...)
 	if err != nil {
 		// Set the current `r.err`
 		r.err = err
@@ -286,9 +276,6 @@ func SetContextVar(name string, ops ...dslInterface) setVar {
 		valOp:   GetContext(name, ops...),
 	}
 }
-
-// TODO: Make SetContextVar a combination of SetVar and GetContext (return type getVar)
-// Also make sure you are handling errors correctly for custom handler functions
 
 func (wfirewall *WebauthnFirewall) Authn(formatString string, ops ...dslInterface) func(http.ResponseWriter, *ExtendedRequest) {
 	getAuthnText := func(r *ExtendedRequest) string {

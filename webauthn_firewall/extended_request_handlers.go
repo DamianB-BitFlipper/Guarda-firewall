@@ -152,3 +152,29 @@ func (r *ExtendedRequest) GetInt64(args ...string) int64 {
 	val, _ := r.getInputInt64_WithErr_Helper(r.getInputDefault, args...)
 	return val
 }
+
+//
+// The context Get functions
+//
+
+func (r *ExtendedRequest) GetContext(contextName string, args ...interface{}) (interface{}, error) {
+	// Look up the respective `contextGetter` function according to the `contextName`
+	contextGetter, ok := r.contextGetters[contextName]
+
+	if !ok {
+		// Set the current `r.err`
+		r.err = fmt.Errorf("Context type does not have getter function: %s", contextName)
+		return nil, r.err
+	}
+
+	// Perform the context get operation
+	val, err := contextGetter(args...)
+	if err != nil {
+		// Set the current `r.err`
+		r.err = err
+		return nil, r.err
+	}
+
+	// Success!
+	return val, nil
+}
