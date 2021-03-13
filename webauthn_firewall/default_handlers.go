@@ -56,7 +56,8 @@ func (wfirewall *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *Exten
 		return
 	}
 
-	userID, err := r.GetInt64_WithErr("userID")
+	// Retrieve the `userID` associated with the current request
+	userID, err := r.GetUserID()
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -125,7 +126,8 @@ func (wfirewall *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *Exte
 		return
 	}
 
-	userID, err := r.GetInt64_WithErr("userID")
+	// Retrieve the `userID` associated with the current request
+	userID, err := r.GetUserID()
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -262,7 +264,7 @@ func (wfirewall *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *Extended
 	wfirewall.prepareJSONResponse(w)
 
 	// Parse the form-data to retrieve the `http.Request` information
-	username, err := r.Get_WithErr("user_name")
+	username, err := r.Get_WithErr("username")
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -277,8 +279,8 @@ func (wfirewall *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *Extende
 	// Call the firewall preamble
 	wfirewall.preamble(w, r)
 
-	// Parse the form-data to retrieve the `http.Request` information
-	username, err := r.Get_WithErr("user_name")
+	// Get the username from the incoming login `http.Request`
+	username, err := wfirewall.loginGetUsername(r)
 	if err != nil {
 		log.Error("%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -319,8 +321,8 @@ func (wfirewall *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *Ext
 	// Call the firewall preamble
 	wfirewall.preamble(w, r)
 
-	// Allow transmitting cookies, used by `sessionStore`
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	// Prepare the response for a JSON object return
+	wfirewall.prepareJSONResponse(w)
 
 	// Retrieve the `userID` associated with the current request
 	userID, err := r.GetUserID()

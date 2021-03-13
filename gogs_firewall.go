@@ -137,10 +137,8 @@ func (firewall *GogsFirewall) publishNewRelease(w http.ResponseWriter, r *wf.Ext
 	attachments := make([]wf.StructContext, len(uuids))
 	for idx, uuid := range uuids {
 		// Retrieve the `Attachment` struct for the respective `uuid`
-		attachment, err := r.GetContext("attachment", uuid)
-		if err != nil {
-			log.Error("%v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		attachment := r.GetContext("attachment", uuid)
+		if r.AnyErrors(w) {
 			return
 		}
 		attachments[idx] = attachment.(wf.StructContext)
@@ -187,9 +185,14 @@ func main() {
 			"attachment": itemFromIDs("attachment", 1),
 		},
 
-		LoginURL: "/user/login",
+		WebauthnCorePrefix: "/webauthn",
+		LoginURL:           "/user/login",
+		LoginGetUsername: func(r *wf.ExtendedRequest) (string, error) {
+			return r.Get_WithErr("user_name")
+		},
 
-		Verbose: true,
+		SupplyOptions: false,
+		Verbose:       true,
 	}
 
 	// Initialize a new webauthn firewall as a `GogsFirewall` to be able to add custom methods

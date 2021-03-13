@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 
 	log "unknwon.dev/clog/v2"
 
@@ -33,10 +34,8 @@ func (wfirewall *WebauthnFirewall) preamble(w http.ResponseWriter, r *ExtendedRe
 }
 
 func (wfirewall *WebauthnFirewall) proxyRequest(w http.ResponseWriter, r *ExtendedRequest) {
-	// Print the HTTP request if verbosity is on
-	if wfirewall.verbose {
-		logRequest(r)
-	}
+	// Call the firewall preamble
+	wfirewall.preamble(w, r)
 
 	wfirewall.ServeHTTP(w, r.Request)
 }
@@ -52,6 +51,20 @@ func (wfirewall *WebauthnFirewall) ProxyRequest(w http.ResponseWriter, r *Extend
 	// Refill before proxying onward
 	r.Refill()
 	wfirewall.proxyRequest(w, r)
+}
+
+func (wfirewall *WebauthnFirewall) optionsHandler(allowMethods ...string) HandlerFnType {
+	return func(w http.ResponseWriter, r *ExtendedRequest) {
+		// Call the firewall preamble
+		wfirewall.preamble(w, r)
+
+		// Set the return OPTIONS
+		w.Header().Set("Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Authorization")
+		w.Header().Set("Access-Control-Allow-Methods", strings.Join(allowMethods, ","))
+		w.Header().Set("Access-Control-Allow-Origin", wfirewall.FrontendAddress)
+
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func checkWebauthnAssertion(
@@ -96,7 +109,7 @@ func checkWebauthnAssertion(
 	return nil
 }
 
-func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedRequest) string) func(http.ResponseWriter, *ExtendedRequest) {
+func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedRequest) string) HandlerFnType {
 	return func(w http.ResponseWriter, r *ExtendedRequest) {
 		// If an error has already occured, exit now
 		if r.err != nil {

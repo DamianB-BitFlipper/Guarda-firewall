@@ -2,10 +2,13 @@ package webauthn_firewall
 
 import (
 	"fmt"
-	"net/http"
+
+	log "unknwon.dev/clog/v2"
 )
 
-type scopeContainer map[string]interface{}
+// The `scopeContainer` is an alias rather than a new type because this type has to
+// be the same as generic JSON parses which are `map[string]interface{}`
+type scopeContainer = map[string]interface{}
 type StructContext = scopeContainer
 
 type dslInterface interface {
@@ -18,7 +21,7 @@ type dslInterface interface {
 
 type getInput struct {
 	fields     []string
-	getInputFn getInputFnType
+	getInputFn func(*ExtendedRequest, ...string) (interface{}, error)
 }
 
 func (g getInput) retrieve(r *ExtendedRequest, _ scopeContainer) interface{} {
@@ -56,9 +59,19 @@ func (g getInput) SubField(field string) getInput {
 func Get(field string) getInput {
 	return getInput{
 		fields: []string{field},
-		getInputFn: func(r *ExtendedRequest, args ...string) (string, error) {
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
 			// Use the default function from the `ExtendedRequest`
 			return r.Get_WithErr(args...)
+		},
+	}
+}
+
+func GetInt64(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			// Use the default function from the `ExtendedRequest`
+			return r.GetInt64_WithErr(args...)
 		},
 	}
 }
@@ -66,8 +79,17 @@ func Get(field string) getInput {
 func Get_Form(field string) getInput {
 	return getInput{
 		fields: []string{field},
-		getInputFn: func(r *ExtendedRequest, args ...string) (string, error) {
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
 			return r.GetFormInput_WithErr(args...)
+		},
+	}
+}
+
+func GetInt64_Form(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			return r.GetFormInputInt64_WithErr(args...)
 		},
 	}
 }
@@ -75,8 +97,17 @@ func Get_Form(field string) getInput {
 func Get_URL(field string) getInput {
 	return getInput{
 		fields: []string{field},
-		getInputFn: func(r *ExtendedRequest, args ...string) (string, error) {
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
 			return r.GetURLInput_WithErr(args...)
+		},
+	}
+}
+
+func GetInt64_URL(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			return r.GetURLInputInt64_WithErr(args...)
 		},
 	}
 }
@@ -84,20 +115,20 @@ func Get_URL(field string) getInput {
 func GetUserID() getInput {
 	return getInput{
 		fields: []string{},
-		getInputFn: func(r *ExtendedRequest, args ...string) (string, error) {
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
 			// Sanity check the input
 			if len(args) != 0 {
-				return "", fmt.Errorf("GetUserID should get no arguments")
+				return 0, fmt.Errorf("GetUserID should get no arguments")
 			}
 
 			// Get the userID and convert it to a `string`
 			val, err := r.GetUserID()
 			if err != nil {
-				return "", err
+				return 0, err
 			}
 
 			// Success!
-			return fmt.Sprintf("%d", val), nil
+			return val, nil
 		},
 	}
 }
@@ -119,13 +150,12 @@ func (g getContext) retrieve(r *ExtendedRequest, scope scopeContainer) interface
 	}
 
 	// Perform the context get operation
-	val, err := r.GetContext(g.contextName, args...)
+	val, err := r.GetContext_WithErr(g.contextName, args...)
 	if err != nil {
-		// Set the current `r.err`
-		r.err = err
-		return r.err
+		return err
 	}
 
+	// TODO: This should error check that `subField` is actually a sub field
 	for _, subField := range g.subFields {
 		val = val.(StructContext)[subField]
 	}
@@ -277,7 +307,34 @@ func SetContextVar(name string, ops ...dslInterface) setVar {
 	}
 }
 
-func (wfirewall *WebauthnFirewall) Authn(formatString string, ops ...dslInterface) func(http.ResponseWriter, *ExtendedRequest) {
+type logOp struct {
+	format string
+	ops    []dslInterface
+}
+
+func (l logOp) retrieve(_ *ExtendedRequest, _ scopeContainer) interface{} {
+	// The `retrieve` does nothing
+	return nil
+}
+
+func (l logOp) execute(r *ExtendedRequest, scope scopeContainer, _ *[]interface{}) {
+	// Retrieve and store the values of every operation
+	args := make([]interface{}, len(l.ops))
+	for i := range args {
+		args[i] = l.ops[i].retrieve(r, scope)
+	}
+
+	log.Info(l.format, args...)
+}
+
+func Log(format string, ops ...dslInterface) logOp {
+	return logOp{
+		format: format,
+		ops:    ops,
+	}
+}
+
+func (wfirewall *WebauthnFirewall) Authn(formatString string, ops ...dslInterface) HandlerFnType {
 	getAuthnText := func(r *ExtendedRequest) string {
 		scope := make(scopeContainer)
 		formatVars := make([]interface{}, 0)

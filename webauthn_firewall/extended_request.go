@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io/ioutil"
 	"net/http"
+
+	log "unknwon.dev/clog/v2"
 )
 
 type RequestRefiller struct {
@@ -43,6 +45,48 @@ func (er *ExtendedRequest) Refill() {
 	er.Request.Body = ioutil.NopCloser(bytes.NewReader(er.data))
 }
 
+func (er *ExtendedRequest) IgnoreError(getter func(...string) string, args ...string) string {
+	// If there already has been an error, retain it
+	if er.err != nil {
+		return ""
+	}
+
+	ret := getter(args...)
+	// If there was an error during `getter` execution, clear it
+	if er.err != nil {
+		er.err = nil
+	}
+
+	return ret
+}
+
+func (er *ExtendedRequest) IgnoreError_WithErr(getter func(...string) (string, error), args ...string) (string, error) {
+	// If there already has been an error, retain it
+	if er.err != nil {
+		return "", er.err
+	}
+
+	ret, err := getter(args...)
+	// If there was an error during `getter` execution, clear it
+	if er.err != nil {
+		er.err = nil
+	}
+
+	// Still be sure to return the `err`
+	return ret, err
+}
+
+func (er *ExtendedRequest) AnyErrors(w http.ResponseWriter) bool {
+	if er.err != nil {
+		log.Error("%v", er.err)
+		http.Error(w, er.err.Error(), http.StatusInternalServerError)
+		return true
+	}
+
+	// No errors!
+	return false
+}
+
 func (wfirewall *WebauthnFirewall) newExtendedRequest(r *http.Request) *ExtendedRequest {
 	extendedReq := &ExtendedRequest{
 		Request: r,
@@ -63,9 +107,7 @@ func (wfirewall *WebauthnFirewall) newExtendedRequest(r *http.Request) *Extended
 	return extendedReq
 }
 
-func (wfirewall *WebauthnFirewall) wrapHandleFn(
-	handleFn func(http.ResponseWriter, *ExtendedRequest)) func(w http.ResponseWriter, r *http.Request) {
-
+func (wfirewall *WebauthnFirewall) wrapHandleFn(handleFn HandlerFnType) func(w http.ResponseWriter, r *http.Request) {
 	// Wrap the `handleFn` with a function that initializes a `ExtendedRequest`
 	wrappedFn := func(w http.ResponseWriter, r *http.Request) {
 		extendedReq := wfirewall.newExtendedRequest(r)

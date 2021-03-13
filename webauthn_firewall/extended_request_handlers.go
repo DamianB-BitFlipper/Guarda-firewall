@@ -1,11 +1,14 @@
 package webauthn_firewall
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 
 	"github.com/gorilla/mux"
 )
+
+type jsonBody = map[string]interface{}
 
 func GetFormInput(r *ExtendedRequest, args ...string) (string, error) {
 	// Sanity check the input
@@ -49,6 +52,51 @@ func GetURLInput(r *ExtendedRequest, args ...string) (string, error) {
 
 	// Success!
 	return val, nil
+}
+
+func GetJSONInput(r *ExtendedRequest, args ...string) (string, error) {
+	// Sanity check the input
+	if r == nil {
+		err := fmt.Errorf("Nil request received")
+		return "", err
+	}
+
+	// JSON inputs should at least one argument
+	if len(args) < 1 {
+		err := fmt.Errorf("JSON inputs expect at least 1 argument. Received: %v", args)
+		return "", err
+	}
+
+	var body interface{}
+	body = make(jsonBody)
+
+	err := json.NewDecoder(r.Request.Body).Decode(&body)
+	if err != nil {
+		return "", err
+	}
+
+	// Extract the request value from `body`
+	for _, arg := range args {
+		cast, ok := body.(jsonBody)
+		if !ok {
+			err := fmt.Errorf("JSON parse fail. Unable to cast intermediate to jsonBody: %[1]T %[1]v", body)
+			return "", err
+		}
+		body = cast[arg]
+	}
+
+	// The last level should be a `string`
+	ret, ok := body.(string)
+	if !ok {
+		err := fmt.Errorf("JSON parse fail. Unable to cast result to string: %v", body)
+		return "", err
+	}
+
+	// Refill since future commands may need the request `Body`
+	r.Refill()
+
+	// Success!
+	return ret, nil
 }
 
 func (r *ExtendedRequest) getInput_WithErr_Helper(getInputFn getInputFnType, args ...string) (string, error) {
@@ -157,7 +205,12 @@ func (r *ExtendedRequest) GetInt64(args ...string) int64 {
 // The context Get functions
 //
 
-func (r *ExtendedRequest) GetContext(contextName string, args ...interface{}) (interface{}, error) {
+func (r *ExtendedRequest) GetContext(contextName string, args ...interface{}) interface{} {
+	val, _ := r.GetContext_WithErr(contextName, args...)
+	return val
+}
+
+func (r *ExtendedRequest) GetContext_WithErr(contextName string, args ...interface{}) (interface{}, error) {
 	// Look up the respective `contextGetter` function according to the `contextName`
 	contextGetter, ok := r.contextGetters[contextName]
 

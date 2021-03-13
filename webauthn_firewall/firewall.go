@@ -46,7 +46,10 @@ type WebauthnFirewall struct {
 	getInputDefault getInputFnType
 	contextGetters  ContextGettersType
 
-	verbose bool
+	loginGetUsername func(*ExtendedRequest) (string, error)
+
+	supplyOptions bool
+	verbose       bool
 }
 
 type WebauthnFirewallConfig struct {
@@ -61,9 +64,12 @@ type WebauthnFirewallConfig struct {
 	GetInputDefault getInputFnType
 	ContextGetters  ContextGettersType
 
-	LoginURL string
+	WebauthnCorePrefix string
+	LoginURL           string
+	LoginGetUsername   func(*ExtendedRequest) (string, error)
 
-	Verbose bool
+	SupplyOptions bool
+	Verbose       bool
 }
 
 func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
@@ -111,30 +117,28 @@ func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
 		getInputDefault: config.GetInputDefault,
 		contextGetters:  config.ContextGetters,
 
-		verbose: config.Verbose,
+		loginGetUsername: config.LoginGetUsername,
+
+		supplyOptions: config.SupplyOptions,
+		verbose:       config.Verbose,
 	}
 
 	// Set the router to the `wfirewall`
 	wfirewall.router = mux.NewRouter()
 
 	// Register the generic HTTP routes
-	wfirewall.Secure("GET", "/webauthn/is_enabled/{user}", wfirewall.webauthnIsEnabled)
+	wfirewall.Secure("GET", fmt.Sprintf("%s/is_enabled/{user}", config.WebauthnCorePrefix), wfirewall.webauthnIsEnabled)
 
-	wfirewall.Secure("POST", "/webauthn/begin_register", wfirewall.beginRegister)
-	wfirewall.Secure("POST", "/webauthn/finish_register", wfirewall.finishRegister)
+	wfirewall.Secure("POST", fmt.Sprintf("%s/begin_register", config.WebauthnCorePrefix), wfirewall.beginRegister)
+	wfirewall.Secure("POST", fmt.Sprintf("%s/finish_register", config.WebauthnCorePrefix), wfirewall.finishRegister)
 
-	wfirewall.Secure("POST", "/webauthn/begin_login", wfirewall.beginLogin)
+	wfirewall.Secure("POST", fmt.Sprintf("%s/begin_login", config.WebauthnCorePrefix), wfirewall.beginLogin)
 	wfirewall.Secure("POST", config.LoginURL, wfirewall.finishLogin)
 
-	wfirewall.Secure("POST", "/webauthn/begin_attestation", wfirewall.beginAttestation)
-	wfirewall.Secure("POST", "/webauthn/disable", wfirewall.disableWebauthn)
+	wfirewall.Secure("POST", fmt.Sprintf("%s/begin_attestation", config.WebauthnCorePrefix), wfirewall.beginAttestation)
+	wfirewall.Secure("POST", fmt.Sprintf("%s/disable", config.WebauthnCorePrefix), wfirewall.disableWebauthn)
 
 	return wfirewall
-}
-
-func (wfirewall *WebauthnFirewall) Secure(method, url string, handleFn func(http.ResponseWriter, *ExtendedRequest)) {
-	// Register the `url` and `method` with the HTTP router
-	wfirewall.router.HandleFunc(url, wfirewall.wrapHandleFn(handleFn)).Methods(method)
 }
 
 func (wfirewall *WebauthnFirewall) ListenAndServeTLS(cert, key string) {
