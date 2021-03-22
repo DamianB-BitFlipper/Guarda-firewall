@@ -32,12 +32,12 @@ type HandlerFnType func(http.ResponseWriter, *ExtendedRequest)
 type ContextGettersType map[string]func(...interface{}) (interface{}, error)
 
 type WebauthnFirewall struct {
-	*httputil.ReverseProxy
+	reverseProxies map[string]*httputil.ReverseProxy
 
 	// Public fields
-	FrontendAddress     string
-	BackendAddress      string
-	ReverseProxyAddress string
+	FrontendAddress       string
+	ReverseProxyTargetMap map[string]string
+	ReverseProxyAddress   string
 
 	// Private fields
 	router *mux.Router
@@ -56,9 +56,9 @@ type WebauthnFirewallConfig struct {
 	RPDisplayName string // Display Name for your site
 	RPID          string // Generally the domain name for your site
 
-	FrontendAddress     string
-	BackendAddress      string
-	ReverseProxyAddress string
+	FrontendAddress       string
+	ReverseProxyTargetMap map[string]string
+	ReverseProxyAddress   string
 
 	GetUserID       func(*http.Request) (int64, error)
 	GetInputDefault getInputFnType
@@ -90,27 +90,12 @@ func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
 		panic("Unable to initialize database: " + err.Error())
 	}
 
-	origin, _ := url.Parse(config.BackendAddress)
-	proxy := httputil.NewSingleHostReverseProxy(origin)
-	proxy.Transport = &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-
-	proxy.ModifyResponse = func(r *http.Response) error {
-		// Change the access control origin for all responses
-		// coming back from the reverse proxy server
-		r.Header.Set("Access-Control-Allow-Origin", config.FrontendAddress)
-		return nil
-	}
-
 	// Construct and return the webauthn firewall
 	wfirewall := &WebauthnFirewall{
-		ReverseProxy: proxy,
-
 		// Set the public fields
-		FrontendAddress:     config.FrontendAddress,
-		BackendAddress:      config.BackendAddress,
-		ReverseProxyAddress: config.ReverseProxyAddress,
+		FrontendAddress:       config.FrontendAddress,
+		ReverseProxyTargetMap: config.ReverseProxyTargetMap,
+		ReverseProxyAddress:   config.ReverseProxyAddress,
 
 		// Set the private fields
 		getUserID:       config.GetUserID,
@@ -121,6 +106,30 @@ func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
 
 		supplyOptions: config.SupplyOptions,
 		verbose:       config.Verbose,
+	}
+
+	// Create a new `ReverseProxy` for every `backendAddress`
+	wfirewall.reverseProxies = make(map[string]*httputil.ReverseProxy)
+
+	for host, backendAddress := range config.ReverseProxyTargetMap {
+		forwardTo, err := url.Parse(backendAddress)
+		if err != nil {
+			panic(fmt.Sprintf("Unable to parse URL: %s", backendAddress))
+		}
+
+		proxy := httputil.NewSingleHostReverseProxy(forwardTo)
+		proxy.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+
+		proxy.ModifyResponse = func(r *http.Response) error {
+			// Change the access control origin for all responses
+			// coming back from the reverse proxy server
+			r.Header.Set("Access-Control-Allow-Origin", config.FrontendAddress)
+			return nil
+		}
+
+		wfirewall.reverseProxies[host] = proxy
 	}
 
 	// Set the router to the `wfirewall`
@@ -150,9 +159,19 @@ func (wfirewall *WebauthnFirewall) ListenAndServeTLS(cert, key string) {
 
 	// Start up the server
 	log.Info("Starting up server on port: %s", wfirewall.ReverseProxyAddress)
-	log.Info("Forwarding HTTP: %s -> %s", wfirewall.ReverseProxyAddress, wfirewall.BackendAddress)
+	log.Info("Forwarding HTTP: %s -> %v", wfirewall.ReverseProxyAddress, wfirewall.ReverseProxyTargetMap)
 
 	log.Fatal("%v", http.ListenAndServeTLS(wfirewall.ReverseProxyAddress, cert, key, wfirewall.router))
+}
+
+func (wfirewall *WebauthnFirewall) ServeHTTP(w http.ResponseWriter, r *ExtendedRequest) {
+	host := r.Request.Host
+
+	if proxy, ok := wfirewall.reverseProxies[host]; ok {
+		proxy.ServeHTTP(w, r.Request)
+		return
+	}
+	w.Write([]byte("403: Host forbidden " + host))
 }
 
 func init() {

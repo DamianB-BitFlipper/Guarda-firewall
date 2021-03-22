@@ -37,7 +37,7 @@ func (wfirewall *WebauthnFirewall) proxyRequest(w http.ResponseWriter, r *Extend
 	// Call the firewall preamble
 	wfirewall.preamble(w, r)
 
-	wfirewall.ServeHTTP(w, r.Request)
+	wfirewall.ServeHTTP(w, r)
 }
 
 func (wfirewall *WebauthnFirewall) ProxyRequest(w http.ResponseWriter, r *ExtendedRequest) {
@@ -170,7 +170,7 @@ func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedReq
 
 		// Once the webauthn check passed, pass the request onward to
 		// the server to check the username and password
-		wfirewall.ServeHTTP(w, r.Request)
+		wfirewall.ServeHTTP(w, r)
 		return
 	}
 }

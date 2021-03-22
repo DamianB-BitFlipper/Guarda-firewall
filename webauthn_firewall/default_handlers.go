@@ -313,7 +313,7 @@ func (wfirewall *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *Extende
 
 	// Once the webauthn check passed, pass the request onward to
 	// the server to check the username and password
-	wfirewall.ServeHTTP(w, r.Request)
+	wfirewall.ServeHTTP(w, r)
 	return
 }
 
