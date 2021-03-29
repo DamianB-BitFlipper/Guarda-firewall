@@ -70,7 +70,11 @@ func GetJSONInput(r *ExtendedRequest, args ...string) (string, error) {
 	var body interface{}
 	body = make(jsonBody)
 
-	err := json.NewDecoder(r.Request.Body).Decode(&body)
+	// Unmarshal numbers into the `Number` type
+	dec := json.NewDecoder(r.Request.Body)
+	dec.UseNumber()
+
+	err := dec.Decode(&body)
 	if err != nil {
 		return "", err
 	}
@@ -85,10 +89,16 @@ func GetJSONInput(r *ExtendedRequest, args ...string) (string, error) {
 		body = cast[arg]
 	}
 
-	// The last level should be a `string`
-	ret, ok := body.(string)
-	if !ok {
-		err := fmt.Errorf("JSON parse fail. Unable to cast result to string: %v", body)
+	var ret string
+
+	// The last level should be a `string` or `Number`
+	switch body.(type) {
+	case string:
+		ret = body.(string)
+	case json.Number:
+		ret = body.(json.Number).String()
+	default:
+		err := fmt.Errorf("JSON parse fail. Unable to cast result to string: %[1]v (%[1]T)", body)
 		return "", err
 	}
 

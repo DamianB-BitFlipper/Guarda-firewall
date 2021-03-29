@@ -192,8 +192,10 @@ func main() {
 		RPDisplayName: "Foobar Corp.",
 		RPID:          "localhost",
 
-		FrontendAddress:     frontendAddress,
-		BackendAddress:      backendAddress,
+		FrontendAddress: frontendAddress,
+		ReverseProxyTargetMap: map[string]string{
+			reverseProxyAddress: backendAddress,
+		},
 		ReverseProxyAddress: reverseProxyAddress,
 
 		GetUserID:       userIDFromJWT,

@@ -33,6 +33,50 @@ func userIDFromSession(_ *http.Request) (int64, error) {
 	return 0, nil
 }
 
+func languageFromID(args ...interface{}) (interface{}, error) {
+	// Sanity check the input
+	if len(args) != 1 {
+		return nil, fmt.Errorf("Language context expects 1 arguments, received: %v", args)
+	}
+
+	v := fmt.Sprintf("%v", args[0])
+
+	// TODO: See if it is possible to do this with the wordpress API route
+	//
+	// Language IDs are hard coded in the front-end
+	switch v {
+	case "1":
+		return "English", nil
+	case "19":
+		return "Espanol", nil
+	default:
+		return "", fmt.Errorf("Unrecognizable language ID %v", v)
+	}
+}
+
+func privacySettingFromID(args ...interface{}) (interface{}, error) {
+	// Sanity check the input
+	if len(args) != 1 {
+		return nil, fmt.Errorf("Privacy setting context expects 1 arguments, received: %v", args)
+	}
+
+	v := fmt.Sprintf("%v", args[0])
+
+	// TODO: See if it is possible to do this with the wordpress API route
+	//
+	// Language IDs are hard coded in the front-end
+	switch v {
+	case "-1":
+		return "Private", nil
+	case "0":
+		return "Coming Soon", nil
+	case "1":
+		return "Public", nil
+	default:
+		return "", fmt.Errorf("Unrecognizable privacy setting %v", v)
+	}
+}
+
 func main() {
 	firewallConfigs := &wf.WebauthnFirewallConfig{
 		RPDisplayName: "Foobar Corp.",
@@ -44,7 +88,10 @@ func main() {
 
 		GetUserID:       userIDFromSession,
 		GetInputDefault: wf.GetJSONInput,
-		ContextGetters:  wf.ContextGettersType{},
+		ContextGetters: wf.ContextGettersType{
+			"language":        languageFromID,
+			"privacy_setting": privacySettingFromID,
+		},
 
 		WebauthnCorePrefix: "/webauthn",
 		LoginURL:           "/user/login",
@@ -58,6 +105,19 @@ func main() {
 
 	// Initialize a new webauthn firewall as a `CalypsoFirewall` to be able to add custom methods
 	firewall := CalypsoFirewall{wf.NewWebauthnFirewall(firewallConfigs)}
+
+	firewall.Secure("POST", "/rest/{version}/sites/{site_id}/settings", firewall.Authn(
+		"Save the profile settings %v %v",
+		wf.SetContextVar("language", wf.Get("lang_id")),
+		wf.GetVar("language"),
+		wf.SetContextVar("privacy_setting", wf.Get("blog_public")),
+		wf.GetVar("privacy_setting"),
+	))
+
+	firewall.Secure("POST", "/rest/{version}/sites/{site_id}/invites/new", firewall.Authn(
+		"Invite new user(s): %v!",
+		wf.Get("invitees"),
+	))
 
 	firewall.ListenAndServeTLS("server.crt", "server.key")
 }
