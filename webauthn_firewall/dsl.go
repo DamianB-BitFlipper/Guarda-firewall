@@ -76,6 +76,16 @@ func GetInt64(field string) getInput {
 	}
 }
 
+func GetArray(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			// Use the default function from the `ExtendedRequest`
+			return r.GetArray_WithErr(args...)
+		},
+	}
+}
+
 func Get_Form(field string) getInput {
 	return getInput{
 		fields: []string{field},
@@ -94,6 +104,15 @@ func GetInt64_Form(field string) getInput {
 	}
 }
 
+func GetArray_Form(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			return r.GetFormInputArray_WithErr(args...)
+		},
+	}
+}
+
 func Get_URL(field string) getInput {
 	return getInput{
 		fields: []string{field},
@@ -108,6 +127,42 @@ func GetInt64_URL(field string) getInput {
 		fields: []string{field},
 		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
 			return r.GetURLInputInt64_WithErr(args...)
+		},
+	}
+}
+
+func GetArray_URL(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			return r.GetURLInputArray_WithErr(args...)
+		},
+	}
+}
+
+func Get_JSON(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			return r.GetJSONInput_WithErr(args...)
+		},
+	}
+}
+
+func GetInt64_JSON(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			return r.GetJSONInputInt64_WithErr(args...)
+		},
+	}
+}
+
+func GetArray_JSON(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			return r.GetJSONInputArray_WithErr(args...)
 		},
 	}
 }
@@ -307,6 +362,9 @@ func SetContextVar(name string, ops ...dslInterface) setVar {
 	}
 }
 
+// Make sure `setVar` implements `dslInterface`
+var _ dslInterface = setVar{}
+
 type logOp struct {
 	format string
 	ops    []dslInterface
@@ -318,7 +376,7 @@ func (l logOp) retrieve(_ *ExtendedRequest, _ scopeContainer) interface{} {
 }
 
 func (l logOp) execute(r *ExtendedRequest, scope scopeContainer, _ *[]interface{}) {
-	// Retrieve and store the values of every operation
+	// Retrieve and save the values of every operation
 	args := make([]interface{}, len(l.ops))
 	for i := range args {
 		args[i] = l.ops[i].retrieve(r, scope)
@@ -333,6 +391,53 @@ func Log(format string, ops ...dslInterface) logOp {
 		ops:    ops,
 	}
 }
+
+// Make sure `logOp` implements `dslInterface`
+var _ dslInterface = logOp{}
+
+type applyOp struct {
+	fn  func(...interface{}) (interface{}, error)
+	ops []dslInterface
+}
+
+func (a applyOp) retrieve(r *ExtendedRequest, scope scopeContainer) interface{} {
+	// Retrieve and save the values of every operation
+	args := make([]interface{}, len(a.ops))
+	for i := range args {
+		args[i] = a.ops[i].retrieve(r, scope)
+	}
+
+	ret, err := a.fn(args...)
+	if err != nil {
+		// Set the current `r.err`
+		r.err = err
+		return err
+	}
+
+	return ret
+}
+
+func (a applyOp) execute(r *ExtendedRequest, scope scopeContainer, formatVars *[]interface{}) {
+	val := a.retrieve(r, scope)
+
+	// Check if there was an error during `retrieve`
+	if r.err != nil {
+		return
+	}
+
+	// Since this is a `get` operation, it should append to the `formatVars`
+	*formatVars = append(*formatVars, val)
+}
+
+func Apply(fn func(...interface{}) (interface{}, error), ops ...dslInterface) applyOp {
+	return applyOp{
+		fn:  fn,
+		ops: ops,
+	}
+}
+
+// Make sure `applyOp` implements `dslInterface`
+var _ dslInterface = applyOp{}
 
 func (wfirewall *WebauthnFirewall) Authn(formatString string, ops ...dslInterface) HandlerFnType {
 	getAuthnText := func(r *ExtendedRequest) string {

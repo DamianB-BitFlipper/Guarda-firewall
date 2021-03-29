@@ -27,7 +27,6 @@ var (
 	sessionStore *session.Store
 )
 
-type getInputFnType func(r *ExtendedRequest, args ...string) (string, error)
 type HandlerFnType func(http.ResponseWriter, *ExtendedRequest)
 type ContextGettersType map[string]func(...interface{}) (interface{}, error)
 

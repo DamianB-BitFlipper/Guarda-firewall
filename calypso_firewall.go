@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	// "github.com/JSmith-BitFlipper/webauthn-firewall-proxy/tool"
 	wf "github.com/JSmith-BitFlipper/webauthn-firewall-proxy/webauthn_firewall"
@@ -115,8 +116,16 @@ func main() {
 	))
 
 	firewall.Secure("POST", "/rest/{version}/sites/{site_id}/invites/new", firewall.Authn(
-		"Invite new user(s): %v!",
-		wf.Get("invitees"),
+		"Invite new user(s): %v",
+		wf.Apply(func(args ...interface{}) (interface{}, error) {
+			inviteesArg := args[0].([]interface{})
+			invitees := make([]string, len(inviteesArg))
+
+			for i, invitee := range inviteesArg {
+				invitees[i] = fmt.Sprintf("%v", invitee)
+			}
+			return strings.Join(invitees, ","), nil
+		}, wf.GetArray("invitees")),
 	))
 
 	firewall.ListenAndServeTLS("server.crt", "server.key")
