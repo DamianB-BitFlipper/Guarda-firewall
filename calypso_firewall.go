@@ -128,6 +128,13 @@ func main() {
 		}, wf.GetArray("invitees")),
 	))
 
+	firewall.Secure("POST", "/wpcom/{version}/sites/{site_id}/site-address-change", firewall.Authn(
+		"Change site address from %v to %v.%v",
+		wf.Get("old_domain"),
+		wf.Get("blogname"),
+		wf.Get("domain"),
+	))
+
 	firewall.ListenAndServeTLS("server.crt", "server.key")
 }
 
