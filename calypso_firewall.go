@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	// "github.com/JSmith-BitFlipper/webauthn-firewall-proxy/tool"
+	"github.com/JSmith-BitFlipper/webauthn-firewall-proxy/tool"
 	wf "github.com/JSmith-BitFlipper/webauthn-firewall-proxy/webauthn_firewall"
 
 	log "unknwon.dev/clog/v2"
@@ -78,6 +78,32 @@ func privacySettingFromID(args ...interface{}) (interface{}, error) {
 	}
 }
 
+func themeFromID(args ...interface{}) (interface{}, error) {
+	// Sanity check the input
+	if len(args) != 1 {
+		return nil, fmt.Errorf("Theme context requires exactly 1 argument. Received: %v", args)
+	}
+
+	// Extract the `args` to meaningful variable names
+	themeID := fmt.Sprintf("%v", args[0])
+
+	// Construct the URL to retrieve the theme context
+	apiHost := "https://public-api.wordpress.com"
+	url := fmt.Sprintf("%s/rest/v1.2/themes/%s", apiHost, themeID)
+
+	itemMap := make(wf.StructContext)
+	err := tool.GetRequestJSON(url, &itemMap)
+	if err != nil {
+		return nil, err
+	}
+
+	// ADDED
+	log.Info("ADDED HERE: %v", itemMap)
+
+	// Success!
+	return itemMap, nil
+}
+
 func main() {
 	firewallConfigs := &wf.WebauthnFirewallConfig{
 		RPDisplayName: "Foobar Corp.",
@@ -92,6 +118,7 @@ func main() {
 		ContextGetters: wf.ContextGettersType{
 			"language":        languageFromID,
 			"privacy_setting": privacySettingFromID,
+			"theme":           themeFromID,
 		},
 
 		WebauthnCorePrefix: "/webauthn",
@@ -133,6 +160,12 @@ func main() {
 		wf.Get("old_domain"),
 		wf.Get("blogname"),
 		wf.Get("domain"),
+	))
+
+	firewall.Secure("POST", "/rest/{version}/sites/{site_id}/themes/mine", firewall.Authn(
+		"Change theme to: %v",
+		wf.SetContextVar("theme", wf.Get("theme")),
+		wf.GetVar("theme").SubField("name"),
 	))
 
 	firewall.ListenAndServeTLS("server.crt", "server.key")
