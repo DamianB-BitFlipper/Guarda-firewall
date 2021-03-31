@@ -29,9 +29,34 @@ type CalypsoFirewall struct {
 	*wf.WebauthnFirewall
 }
 
-func userIDFromSession(_ *http.Request) (int64, error) {
-	// TODO
-	return 0, nil
+func userIDFromSession(r *http.Request) (int64, error) {
+	// Get the UserID associated with the sessionID in the cookies. This is to assure that the
+	// server and the firewall are referencing the same user during the webauthn check
+	apiHost := "https://public-api.wordpress.com"
+	url := fmt.Sprintf("%s/rest/v1.1/me", apiHost)
+	userIDReq, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+
+	// Pass on the Authorization header from `r` to `userIDReq`
+	authorizationString := r.Header.Get("Authorization")
+	userIDReq.Header.Set("Authorization", authorizationString)
+
+	for _, cookie := range r.Cookies() {
+		userIDReq.AddCookie(cookie)
+	}
+
+	var sessionInfo struct {
+		UserID int64 `json:"ID"`
+	}
+	err = tool.PerformRequestJSON(userIDReq, &sessionInfo)
+	if err != nil {
+		return 0, err
+	}
+
+	// Success!
+	return sessionInfo.UserID, nil
 }
 
 func languageFromID(args ...interface{}) (interface{}, error) {
@@ -97,9 +122,6 @@ func themeFromID(args ...interface{}) (interface{}, error) {
 		return nil, err
 	}
 
-	// ADDED
-	log.Info("ADDED HERE: %v", itemMap)
-
 	// Success!
 	return itemMap, nil
 }
@@ -127,7 +149,7 @@ func main() {
 			return r.Get_WithErr("user_name")
 		},
 
-		SupplyOptions: false,
+		SupplyOptions: true,
 		Verbose:       true,
 	}
 
