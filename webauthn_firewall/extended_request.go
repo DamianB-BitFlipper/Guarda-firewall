@@ -2,6 +2,7 @@ package webauthn_firewall
 
 import (
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 
@@ -76,10 +77,30 @@ func (er *ExtendedRequest) IgnoreError_WithErr(getter func(...string) (string, e
 	return ret, err
 }
 
-func (er *ExtendedRequest) AnyErrors(w http.ResponseWriter) bool {
+func (er *ExtendedRequest) HandleError(w http.ResponseWriter, err error) bool {
+	// Default with `http.StatusInternalServerError`
+	return er.HandleError_WithStatus(w, err, http.StatusInternalServerError)
+}
+
+func (er *ExtendedRequest) HandleError_WithStatus(w http.ResponseWriter, err error, status int) bool {
+	// Set the current `er.err` if there is an error
+	if err != nil {
+		er.err = err
+	}
+
+	// Let `HandleAnyErrors` do the rest
+	return er.HandleAnyErrors_WithStatus(w, status)
+}
+
+func (er *ExtendedRequest) HandleAnyErrors(w http.ResponseWriter) bool {
+	// Default with `http.StatusInternalServerError`
+	return er.HandleAnyErrors_WithStatus(w, http.StatusInternalServerError)
+}
+
+func (er *ExtendedRequest) HandleAnyErrors_WithStatus(w http.ResponseWriter, status int) bool {
 	if er.err != nil {
 		log.Error("%v", er.err)
-		http.Error(w, er.err.Error(), http.StatusInternalServerError)
+		http.Error(w, er.err.Error(), status)
 		return true
 	}
 
@@ -88,6 +109,15 @@ func (er *ExtendedRequest) AnyErrors(w http.ResponseWriter) bool {
 }
 
 func (wfirewall *WebauthnFirewall) newExtendedRequest(r *http.Request) *ExtendedRequest {
+	// Extract the `getInputDefault` function for the request's host
+	host := r.Host
+	target, ok := wfirewall.ReverseProxyTargetMap[host]
+	if !ok {
+		return &ExtendedRequest{
+			err: fmt.Errorf("Host %s not found in proxy target map: %v", host, wfirewall.ReverseProxyTargetMap),
+		}
+	}
+
 	extendedReq := &ExtendedRequest{
 		Request: r,
 
@@ -95,7 +125,7 @@ func (wfirewall *WebauthnFirewall) newExtendedRequest(r *http.Request) *Extended
 		GetUserID: func() (int64, error) {
 			return wfirewall.getUserID(r)
 		},
-		getInputDefault: wfirewall.getInputDefault,
+		getInputDefault: target.getInputDefault,
 		contextGetters:  wfirewall.contextGetters,
 
 		err: nil,

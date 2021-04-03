@@ -30,20 +30,45 @@ var (
 type HandlerFnType func(http.ResponseWriter, *ExtendedRequest)
 type ContextGettersType map[string]func(...interface{}) (interface{}, error)
 
+type targetTuple struct {
+	destination     string
+	getInputDefault getInputFnType
+}
+type proxyTargetMap map[string]targetTuple
+
+func NewProxyTarget(src, dest string, getInputDefault getInputFnType) proxyTargetMap {
+	target := targetTuple{
+		destination:     dest,
+		getInputDefault: getInputDefault,
+	}
+
+	return proxyTargetMap{src: target}
+}
+
+func (p proxyTargetMap) AnotherTarget(src, dest string, getInputDefault getInputFnType) proxyTargetMap {
+	target := targetTuple{
+		destination:     dest,
+		getInputDefault: getInputDefault,
+	}
+
+	// Add the `target` to `p` and return
+	p[src] = target
+	return p
+}
+
 type WebauthnFirewall struct {
 	reverseProxies map[string]*httputil.ReverseProxy
 
 	// Public fields
 	FrontendAddress       string
-	ReverseProxyTargetMap map[string]string
+	ReverseProxyTargetMap proxyTargetMap
 	ReverseProxyAddress   string
 
 	// Private fields
 	router *mux.Router
 
-	getUserID       func(*http.Request) (int64, error)
-	getInputDefault getInputFnType
-	contextGetters  ContextGettersType
+	getUserID      func(*http.Request) (int64, error)
+	contextGetters ContextGettersType
 
 	loginGetUsername func(*ExtendedRequest) (string, error)
 
@@ -56,12 +81,11 @@ type WebauthnFirewallConfig struct {
 	RPID          string // Generally the domain name for your site
 
 	FrontendAddress       string
-	ReverseProxyTargetMap map[string]string
+	ReverseProxyTargetMap proxyTargetMap
 	ReverseProxyAddress   string
 
-	GetUserID       func(*http.Request) (int64, error)
-	GetInputDefault getInputFnType
-	ContextGetters  ContextGettersType
+	GetUserID      func(*http.Request) (int64, error)
+	ContextGetters ContextGettersType
 
 	WebauthnCorePrefix string
 	LoginURL           string
@@ -97,9 +121,8 @@ func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
 		ReverseProxyAddress:   config.ReverseProxyAddress,
 
 		// Set the private fields
-		getUserID:       config.GetUserID,
-		getInputDefault: config.GetInputDefault,
-		contextGetters:  config.ContextGetters,
+		getUserID:      config.GetUserID,
+		contextGetters: config.ContextGetters,
 
 		loginGetUsername: config.LoginGetUsername,
 
@@ -110,10 +133,10 @@ func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
 	// Create a new `ReverseProxy` for every `backendAddress`
 	wfirewall.reverseProxies = make(map[string]*httputil.ReverseProxy)
 
-	for host, backendAddress := range config.ReverseProxyTargetMap {
-		forwardTo, err := url.Parse(backendAddress)
+	for host, target := range config.ReverseProxyTargetMap {
+		forwardTo, err := url.Parse(target.destination)
 		if err != nil {
-			panic(fmt.Sprintf("Unable to parse URL: %s", backendAddress))
+			panic(fmt.Sprintf("Unable to parse URL: %s", target.destination))
 		}
 
 		proxy := httputil.NewSingleHostReverseProxy(forwardTo)
@@ -121,10 +144,11 @@ func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
 
-		proxy.ModifyResponse = func(r *http.Response) error {
+		proxy.ModifyResponse = func(resp *http.Response) error {
 			// Change the access control origin for all responses
 			// coming back from the reverse proxy server
-			r.Header.Set("Access-Control-Allow-Origin", config.FrontendAddress)
+			resp.Header.Set("Access-Control-Allow-Origin", config.FrontendAddress)
+
 			return nil
 		}
 
@@ -141,7 +165,11 @@ func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
 	wfirewall.Secure("POST", fmt.Sprintf("%s/finish_register", config.WebauthnCorePrefix), wfirewall.finishRegister)
 
 	wfirewall.Secure("POST", fmt.Sprintf("%s/begin_login", config.WebauthnCorePrefix), wfirewall.beginLogin)
-	wfirewall.Secure("POST", config.LoginURL, wfirewall.finishLogin)
+
+	// Use the provided `finishLogin` function under the user's discretion
+	if config.LoginURL != "" {
+		wfirewall.Secure("POST", config.LoginURL, wfirewall.finishLogin)
+	}
 
 	wfirewall.Secure("POST", fmt.Sprintf("%s/begin_attestation", config.WebauthnCorePrefix), wfirewall.beginAttestation)
 	wfirewall.Secure("POST", fmt.Sprintf("%s/disable", config.WebauthnCorePrefix), wfirewall.disableWebauthn)

@@ -138,7 +138,7 @@ func (firewall *GogsFirewall) publishNewRelease(w http.ResponseWriter, r *wf.Ext
 	for idx, uuid := range uuids {
 		// Retrieve the `Attachment` struct for the respective `uuid`
 		attachment := r.GetContext("attachment", uuid)
-		if r.AnyErrors(w) {
+		if r.HandleAnyErrors(w) {
 			return
 		}
 		attachments[idx] = attachment.(wf.StructContext)

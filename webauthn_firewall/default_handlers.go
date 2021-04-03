@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/http"
 
-	log "unknwon.dev/clog/v2"
-
 	"github.com/JSmith-BitFlipper/webauthn-firewall-proxy/db"
 
 	"webauthn/protocol"
@@ -30,9 +28,7 @@ func (wfirewall *WebauthnFirewall) webauthnIsEnabled(w http.ResponseWriter, r *E
 
 	// Marshal a response `webauthn_is_enabled` field
 	json_response, err := json.Marshal(map[string]bool{"webauthn_is_enabled": isEnabled})
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
@@ -50,17 +46,13 @@ func (wfirewall *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *Exten
 
 	// Parse the form-data to retrieve the `http.Request` information
 	username, err := r.Get_WithErr("username")
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
 	// Retrieve the `userID` associated with the current request
 	userID, err := r.GetUserID()
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
@@ -77,25 +69,19 @@ func (wfirewall *WebauthnFirewall) beginRegister(w http.ResponseWriter, r *Exten
 		wuser,
 		// TODO registerOptions,
 	)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
 	// Convert the `options` into JSON format
 	json_response, err := json.Marshal(options.Response)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
 	// Save the `sessionData` as marshaled JSON
 	err = sessionStore.SaveWebauthnSession("registration", sessionData, r.Request, w)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
@@ -113,24 +99,18 @@ func (wfirewall *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *Exte
 
 	// Parse the form-data to retrieve the `http.Request` information
 	username, err := r.Get_WithErr("username")
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
 	credentials, err := r.Get_WithErr("credentials")
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
 	// Retrieve the `userID` associated with the current request
 	userID, err := r.GetUserID()
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
@@ -139,24 +119,18 @@ func (wfirewall *WebauthnFirewall) finishRegister(w http.ResponseWriter, r *Exte
 
 	// Load the session data
 	sessionData, err := sessionStore.GetWebauthnSession("registration", r.Request)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if r.HandleError_WithStatus(w, err, http.StatusBadRequest) {
 		return
 	}
 
 	wcredential, err := webauthnAPI.FinishRegistration(wuser, sessionData, credentials)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if r.HandleError_WithStatus(w, err, http.StatusBadRequest) {
 		return
 	}
 
 	// Marshal a response `redirectTo` field to reload the page
 	json_response, err := json.Marshal(map[string]string{"redirectTo": ""})
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
@@ -185,9 +159,7 @@ func (wfirewall *WebauthnFirewall) beginAttestation_base(
 
 	// Get a `webauthnUser` from the input `query`
 	wuser, err := db.WebauthnStore.GetWebauthnUser(query)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if r.HandleError_WithStatus(w, err, http.StatusBadRequest) {
 		return
 	}
 
@@ -195,9 +167,7 @@ func (wfirewall *WebauthnFirewall) beginAttestation_base(
 	//
 	// Generate the webauthn `options` and `sessionData`
 	options, sessionData, err := webauthnAPI.BeginLogin(wuser, nil)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
@@ -206,17 +176,13 @@ func (wfirewall *WebauthnFirewall) beginAttestation_base(
 
 	// Convert the `options` into JSON format
 	json_response, err := json.Marshal(options.Response)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
 	// Store session data as marshaled JSON
 	err = sessionStore.SaveWebauthnSession("authentication", sessionData, r.Request, w)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
@@ -234,17 +200,13 @@ func (wfirewall *WebauthnFirewall) beginAttestation(w http.ResponseWriter, r *Ex
 
 	// Retrieve the `userID` associated with the current request
 	userID, err := r.GetUserID()
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
 	// Parse the form-data to retrieve the `http.Request` information
 	authenticationText, err := r.Get_WithErr("auth_text")
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
@@ -265,9 +227,7 @@ func (wfirewall *WebauthnFirewall) beginLogin(w http.ResponseWriter, r *Extended
 
 	// Parse the form-data to retrieve the `http.Request` information
 	username, err := r.Get_WithErr("username")
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
@@ -281,16 +241,12 @@ func (wfirewall *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *Extende
 
 	// Get the username from the incoming login `http.Request`
 	username, err := wfirewall.loginGetUsername(r)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
 	assertion, err := r.Get_WithErr("assertion")
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
@@ -300,10 +256,8 @@ func (wfirewall *WebauthnFirewall) finishLogin(w http.ResponseWriter, r *Extende
 	// Perform a webauthn check if webauthn is enabled for this user
 	if isEnabled {
 		// Check the webauthn assertion for this operation. There are no extensions to verify
-		err = checkWebauthnAssertion(r, db.QueryByUsername(username), nil, assertion)
-		if err != nil {
-			log.Error("%v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		err = CheckWebauthnAssertion(r, db.QueryByUsername(username), nil, assertion)
+		if r.HandleError_WithStatus(w, err, http.StatusBadRequest) {
 			return
 		}
 	}
@@ -326,17 +280,13 @@ func (wfirewall *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *Ext
 
 	// Retrieve the `userID` associated with the current request
 	userID, err := r.GetUserID()
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
 	// Parse the form-data to retrieve the `http.Request` information
 	assertion, err := r.Get_WithErr("assertion")
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 
@@ -345,9 +295,7 @@ func (wfirewall *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *Ext
 
 	// Get a `webauthnUser` for the `query`
 	wuser, err := db.WebauthnStore.GetWebauthnUser(query)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if r.HandleError_WithStatus(w, err, http.StatusBadRequest) {
 		return
 	}
 
@@ -356,18 +304,14 @@ func (wfirewall *WebauthnFirewall) disableWebauthn(w http.ResponseWriter, r *Ext
 	extensions["txAuthSimple"] = fmt.Sprintf("Confirm disable webauthn for %v", wuser.WebAuthnName())
 
 	// Check the webauthn assertion for this operation.
-	err = checkWebauthnAssertion(r, query, extensions, assertion)
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	err = CheckWebauthnAssertion(r, query, extensions, assertion)
+	if r.HandleError_WithStatus(w, err, http.StatusBadRequest) {
 		return
 	}
 
 	// Marshal a response `redirectTo` field to reload the page
 	json_response, err := json.Marshal(map[string]string{"redirectTo": ""})
-	if err != nil {
-		log.Error("%v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.HandleError(w, err) {
 		return
 	}
 

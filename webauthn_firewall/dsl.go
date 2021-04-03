@@ -167,6 +167,33 @@ func GetArray_JSON(field string) getInput {
 	}
 }
 
+func Get_URLParam(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			return r.GetURLParam_WithErr(args...)
+		},
+	}
+}
+
+func GetInt64_URLParam(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			return r.GetURLParamInt64_WithErr(args...)
+		},
+	}
+}
+
+func GetArray_URLParam(field string) getInput {
+	return getInput{
+		fields: []string{field},
+		getInputFn: func(r *ExtendedRequest, args ...string) (interface{}, error) {
+			return r.GetURLParamArray_WithErr(args...)
+		},
+	}
+}
+
 func GetUserID() getInput {
 	return getInput{
 		fields: []string{},

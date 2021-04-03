@@ -10,6 +10,7 @@ import (
 
 type jsonBody = map[string]interface{}
 type getInputFnType func(r *ExtendedRequest, args ...string) (interface{}, error)
+type urlParameter []string
 
 func GetFormInput(r *ExtendedRequest, args ...string) (interface{}, error) {
 	// Sanity check the input
@@ -97,15 +98,52 @@ func GetJSONInput(r *ExtendedRequest, args ...string) (interface{}, error) {
 	return body, nil
 }
 
+func GetURLParamInput(r *ExtendedRequest, args ...string) (interface{}, error) {
+	// Sanity check the input
+	if r == nil {
+		err := fmt.Errorf("Nil request received")
+		return "", err
+	}
+
+	// JSON inputs should at least one argument
+	if len(args) != 1 {
+		err := fmt.Errorf("URL parameter inputs expect only 1 argument. Received: %v", args)
+		return "", err
+	}
+
+	// Extract the URL `params`
+	params := r.Request.URL.Query()
+
+	// Find the `args[0]` among the URL `params`
+	param, ok := params[args[0]]
+	if !ok {
+		err := fmt.Errorf("Parameter named %s not found among URL parameters: %v", args[0], params)
+		return "", err
+	}
+
+	// Success!
+	return urlParameter(param), nil
+}
+
 func castToString(val interface{}) (ret string, err error) {
 	switch val.(type) {
 	case string:
 		ret = val.(string)
 	case json.Number:
 		ret = val.(json.Number).String()
+	case urlParameter:
+		param := val.(urlParameter)
+
+		// Sanity check that there is only one `param`
+		if len(param) != 1 {
+			return "", fmt.Errorf("Case fail. Must be single URL param to cast to a string. Received: %v", param)
+		}
+
+		// To cast a URL parameter to a string, simply take the first element
+		return castToString(param[0])
 	default:
 		// Record the `err`
-		err = fmt.Errorf("JSON parse fail. Unable to cast result to string: %[1]v (%[1]T)", val)
+		err = fmt.Errorf("Parse fail. Unable to cast result to string: %[1]v (%[1]T)", val)
 	}
 
 	return ret, err
@@ -117,9 +155,19 @@ func castToInt64(val interface{}) (ret int64, err error) {
 		ret, err = strconv.ParseInt(val.(string), 10, 64)
 	case json.Number:
 		ret, err = val.(json.Number).Int64()
+	case urlParameter:
+		param := val.(urlParameter)
+
+		// Sanity check that there is only one `param`
+		if len(param) != 1 {
+			return 0, fmt.Errorf("Case fail. Must be single URL param to cast to an int64. Received: %v", param)
+		}
+
+		// To cast a URL parameter to an int64, simply take the first element
+		return castToInt64(param[0])
 	default:
 		// Record the `err`
-		err = fmt.Errorf("JSON parse fail. Unable to cast result to int64: %[1]v (%[1]T)", val)
+		err = fmt.Errorf("Parse fail. Unable to cast result to int64: %[1]v (%[1]T)", val)
 	}
 
 	return ret, err
@@ -129,9 +177,17 @@ func castToArray(val interface{}) (ret []interface{}, err error) {
 	switch val.(type) {
 	case []interface{}:
 		ret = val.([]interface{})
+	case urlParameter:
+		param := val.(urlParameter)
+
+		// Instantiate and type convert the `param` into `ret`
+		ret = make([]interface{}, len(param))
+		for i, v := range param {
+			ret[i] = v
+		}
 	default:
 		// Record the `err`
-		err = fmt.Errorf("JSON parse fail. Unable to cast result to []interface{}: %[1]v (%[1]T)", val)
+		err = fmt.Errorf("Parse fail. Unable to cast result to []interface{}: %[1]v (%[1]T)", val)
 	}
 
 	return ret, err
@@ -244,7 +300,7 @@ func (r *ExtendedRequest) GetFormInputArray(args ...string) []interface{} {
 }
 
 //
-// URL value Get functions
+// URL route Get functions
 //
 
 func (r *ExtendedRequest) GetURLInput_WithErr(args ...string) (string, error) {
@@ -302,6 +358,37 @@ func (r *ExtendedRequest) GetJSONInputArray_WithErr(args ...string) ([]interface
 
 func (r *ExtendedRequest) GetJSONInputArray(args ...string) []interface{} {
 	val, _ := r.getInputArray_WithErr_Helper(GetJSONInput, args...)
+	return val
+}
+
+//
+// URL parameter Get functions
+//
+
+func (r *ExtendedRequest) GetURLParam_WithErr(args ...string) (string, error) {
+	return r.getInputString_WithErr_Helper(GetURLParamInput, args...)
+}
+
+func (r *ExtendedRequest) GetURLParam(args ...string) string {
+	val, _ := r.getInputString_WithErr_Helper(GetURLParamInput, args...)
+	return val
+}
+
+func (r *ExtendedRequest) GetURLParamInt64_WithErr(args ...string) (int64, error) {
+	return r.getInputInt64_WithErr_Helper(GetURLParamInput, args...)
+}
+
+func (r *ExtendedRequest) GetURLParamInt64(args ...string) int64 {
+	val, _ := r.getInputInt64_WithErr_Helper(GetURLParamInput, args...)
+	return val
+}
+
+func (r *ExtendedRequest) GetURLParamArray_WithErr(args ...string) ([]interface{}, error) {
+	return r.getInputArray_WithErr_Helper(GetURLParamInput, args...)
+}
+
+func (r *ExtendedRequest) GetURLParamArray(args ...string) []interface{} {
+	val, _ := r.getInputArray_WithErr_Helper(GetURLParamInput, args...)
 	return val
 }
 

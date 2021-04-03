@@ -152,7 +152,7 @@ func getCurrentUser(args ...interface{}) (interface{}, error) {
 
 func (firewall *ConduitFirewall) updateUser(w http.ResponseWriter, r *wf.ExtendedRequest) {
 	_currentUser := r.GetContext("current_user", r)
-	if r.AnyErrors(w) {
+	if r.HandleAnyErrors(w) {
 		// Exit if there were any errors during the `GetContext`
 		return
 	}

@@ -5,24 +5,26 @@ import (
 	"net/http"
 	"strings"
 
+	log "unknwon.dev/clog/v2"
+
+	"github.com/JSmith-BitFlipper/webauthn-firewall-proxy/db"
 	"github.com/JSmith-BitFlipper/webauthn-firewall-proxy/tool"
 	wf "github.com/JSmith-BitFlipper/webauthn-firewall-proxy/webauthn_firewall"
-
-	log "unknwon.dev/clog/v2"
 )
 
+// To forward 443 to 8081: sudo iptables -t nat -A OUTPUT -o lo -p tcp --dport 443 -j REDIRECT --to-port 8081
+// Edited: about:config -> network.stricttransportsecurity.preloadlist to `true`
+
 const (
-	frontendPort int = 3000
-	// To forward 443 to 8081: sudo iptables -t nat -A OUTPUT -o lo -p tcp --dport 443 -j REDIRECT --to-port 8081
+	frontendPort     int = 3000
 	reverseProxyPort int = 8081
 )
 
 var (
-	frontendAddress string            = fmt.Sprintf("https://calypso.localhost:%d", frontendPort)
-	hostTargetMap   map[string]string = map[string]string{
-		"public-api.wordpress.com": "https://workaround-public-api.wordpress.com",
-	}
-	reverseProxyAddress string = fmt.Sprintf("localhost:%d", reverseProxyPort)
+	frontendAddress       = fmt.Sprintf("https://calypso.localhost:%d", frontendPort)
+	reverseProxyTargetMap = wf.NewProxyTarget("public-api.wordpress.com", "https://workaround-public-api.wordpress.com", wf.GetJSONInput).
+				AnotherTarget("wordpress.com", "https://workaround.wordpress.com", wf.GetFormInput)
+	reverseProxyAddress = fmt.Sprintf("localhost:%d", reverseProxyPort)
 )
 
 type CalypsoFirewall struct {
@@ -126,17 +128,59 @@ func themeFromID(args ...interface{}) (interface{}, error) {
 	return itemMap, nil
 }
 
+func (firewall *CalypsoFirewall) finishLogin(w http.ResponseWriter, r *wf.ExtendedRequest) {
+	var handlerFn wf.HandlerFnType
+
+	// Handle the different `action` accordingly
+	action := r.GetURLParam("action")
+	switch action {
+	case "login-endpoint":
+		handlerFn = func(w http.ResponseWriter, r *wf.ExtendedRequest) {
+			// Get the username from the incoming login `http.Request`
+			username := r.Get("username")
+			assertion := r.Get("assertion")
+			if r.HandleAnyErrors(w) {
+				// Exit if there were any errors during the `Get` operations
+				return
+			}
+
+			// See if the user has webauthn enabled
+			isEnabled := db.WebauthnStore.IsUserEnabled(db.QueryByUsername(username))
+
+			// Perform a webauthn check if webauthn is enabled for this user
+			if isEnabled {
+				// Check the webauthn assertion for this operation. There are no extensions to verify
+				err := wf.CheckWebauthnAssertion(r, db.QueryByUsername(username), nil, assertion)
+				if r.HandleError_WithStatus(w, err, http.StatusBadRequest) {
+					return
+				}
+			}
+
+			// Once the webauthn check passed, pass the request onward to
+			// the server to check the username and password
+			firewall.ProxyRequest(w, r)
+			return
+		}
+	default:
+		handlerFn = firewall.ProxyRequest
+	}
+
+	// Run the `handlerFn`
+	handlerFn(w, r)
+	return
+}
+
 func main() {
+	// TODO: Add a flag to fall through (use / as a catch all) or not
 	firewallConfigs := &wf.WebauthnFirewallConfig{
 		RPDisplayName: "Foobar Corp.",
 		RPID:          "calypso.localhost",
 
 		FrontendAddress:       frontendAddress,
-		ReverseProxyTargetMap: hostTargetMap,
+		ReverseProxyTargetMap: reverseProxyTargetMap,
 		ReverseProxyAddress:   reverseProxyAddress,
 
-		GetUserID:       userIDFromSession,
-		GetInputDefault: wf.GetJSONInput,
+		GetUserID: userIDFromSession,
 		ContextGetters: wf.ContextGettersType{
 			"language":        languageFromID,
 			"privacy_setting": privacySettingFromID,
@@ -144,10 +188,8 @@ func main() {
 		},
 
 		WebauthnCorePrefix: "/webauthn",
-		LoginURL:           "/user/login",
-		LoginGetUsername: func(r *wf.ExtendedRequest) (string, error) {
-			return r.Get_WithErr("user_name")
-		},
+		LoginURL:           "", // Use a custom `finishLogin` function
+		LoginGetUsername:   nil,
 
 		SupplyOptions: true,
 		Verbose:       true,
@@ -155,6 +197,9 @@ func main() {
 
 	// Initialize a new webauthn firewall as a `CalypsoFirewall` to be able to add custom methods
 	firewall := CalypsoFirewall{wf.NewWebauthnFirewall(firewallConfigs)}
+
+	// Implement the custom `finishLogin` function
+	firewall.Secure("POST", "/wp-login.php", firewall.finishLogin)
 
 	firewall.Secure("POST", "/rest/{version}/sites/{site_id}/settings", firewall.Authn(
 		"Save the profile settings %v %v",

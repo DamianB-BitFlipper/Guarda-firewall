@@ -35,16 +35,18 @@ func (wfirewall *WebauthnFirewall) preamble(w http.ResponseWriter, r *ExtendedRe
 
 func (wfirewall *WebauthnFirewall) proxyRequest(w http.ResponseWriter, r *ExtendedRequest) {
 	// Call the firewall preamble
-	wfirewall.preamble(w, r)
+	//wfirewall.preamble(w, r)
+	// ADDED
+	if wfirewall.verbose {
+		logRequest(r)
+	}
 
 	wfirewall.ServeHTTP(w, r)
 }
 
 func (wfirewall *WebauthnFirewall) ProxyRequest(w http.ResponseWriter, r *ExtendedRequest) {
 	// If an error has already occured, exit now
-	if r.err != nil {
-		log.Error("%v", r.err)
-		http.Error(w, r.err.Error(), http.StatusInternalServerError)
+	if r.HandleAnyErrors(w) {
 		return
 	}
 
@@ -67,7 +69,7 @@ func (wfirewall *WebauthnFirewall) optionsHandler(allowMethods ...string) Handle
 	}
 }
 
-func checkWebauthnAssertion(
+func CheckWebauthnAssertion(
 	r *ExtendedRequest,
 	query db.WebauthnQuery,
 	expectedExtensions protocol.AuthenticationExtensions,
@@ -111,10 +113,8 @@ func checkWebauthnAssertion(
 
 func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedRequest) string) HandlerFnType {
 	return func(w http.ResponseWriter, r *ExtendedRequest) {
-		// If an error has already occured, exit now
-		if r.err != nil {
-			log.Error("%v", r.err)
-			http.Error(w, r.err.Error(), http.StatusInternalServerError)
+		// If an error has already occured (usually during initialization), exit now
+		if r.HandleAnyErrors(w) {
 			return
 		}
 
@@ -123,9 +123,7 @@ func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedReq
 
 		// Retrieve the `userID` associated with the current request
 		userID, err := r.GetUserID()
-		if err != nil {
-			log.Error("%v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if r.HandleError(w, err) {
 			return
 		}
 
@@ -136,9 +134,7 @@ func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedReq
 		if isEnabled {
 			// Parse the form-data to retrieve the `http.Request` information
 			assertion, err := r.Get_WithErr("assertion")
-			if err != nil {
-				log.Error("%v", err)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+			if r.HandleError(w, err) {
 				return
 			}
 
@@ -146,9 +142,7 @@ func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedReq
 			authnText := getAuthnText(r)
 
 			// Check if there were any errors from `getAuthnText`
-			if r.err != nil {
-				log.Error("%v", r.err)
-				http.Error(w, r.err.Error(), http.StatusInternalServerError)
+			if r.HandleAnyErrors(w) {
 				return
 			}
 
@@ -157,10 +151,8 @@ func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedReq
 			extensions["txAuthSimple"] = authnText
 
 			// Check the webauthn assertion for this operation
-			err = checkWebauthnAssertion(r, db.QueryByUserID(userID), extensions, assertion)
-			if err != nil {
-				log.Error("%v", err)
-				http.Error(w, err.Error(), http.StatusBadRequest)
+			err = CheckWebauthnAssertion(r, db.QueryByUserID(userID), extensions, assertion)
+			if r.HandleError_WithStatus(w, err, http.StatusBadRequest) {
 				return
 			}
 
