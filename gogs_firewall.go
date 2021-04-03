@@ -21,6 +21,8 @@ var (
 	frontendAddress     string = fmt.Sprintf("https://localhost:%d", frontendPort)
 	backendAddress      string = fmt.Sprintf("https://localhost:%d", backendPort)
 	reverseProxyAddress string = fmt.Sprintf("localhost:%d", reverseProxyPort)
+
+	reverseProxyTargetMap = wf.NewProxyTarget(reverseProxyAddress, backendAddress, wf.GetFormInput)
 )
 
 type GogsFirewall struct {
@@ -170,12 +172,11 @@ func main() {
 		RPDisplayName: "Foobar Corp.",
 		RPID:          "localhost",
 
-		FrontendAddress:     frontendAddress,
-		BackendAddress:      backendAddress,
-		ReverseProxyAddress: reverseProxyAddress,
+		FrontendAddress:       frontendAddress,
+		ReverseProxyTargetMap: reverseProxyTargetMap,
+		ReverseProxyAddress:   reverseProxyAddress,
 
-		GetUserID:       userIDFromSession,
-		GetInputDefault: wf.GetFormInput,
+		GetUserID: userIDFromSession,
 		ContextGetters: wf.ContextGettersType{
 			"ssh_key":    itemFromIDs("ssh_key", 1),
 			"repo":       itemFromIDs("repository", 1),
