@@ -20,9 +20,11 @@ const (
 )
 
 var (
-	frontendAddress     string = fmt.Sprintf("https://localhost:%d", frontendPort)
-	backendAddress      string = fmt.Sprintf("http://localhost:%d", backendPort)
-	reverseProxyAddress string = fmt.Sprintf("localhost:%d", reverseProxyPort)
+	frontendAddress     = fmt.Sprintf("https://localhost:%d", frontendPort)
+	backendAddress      = fmt.Sprintf("http://localhost:%d", backendPort)
+	reverseProxyAddress = fmt.Sprintf("localhost:%d", reverseProxyPort)
+
+	reverseProxyTargetMap = wf.NewProxyTarget(reverseProxyAddress, backendAddress, wf.GetJSONInput)
 )
 
 type ConduitFirewall struct {
@@ -192,14 +194,11 @@ func main() {
 		RPDisplayName: "Foobar Corp.",
 		RPID:          "localhost",
 
-		FrontendAddress: frontendAddress,
-		ReverseProxyTargetMap: map[string]string{
-			reverseProxyAddress: backendAddress,
-		},
-		ReverseProxyAddress: reverseProxyAddress,
+		FrontendAddress:       frontendAddress,
+		ReverseProxyTargetMap: reverseProxyTargetMap,
+		ReverseProxyAddress:   reverseProxyAddress,
 
-		GetUserID:       userIDFromJWT,
-		GetInputDefault: wf.GetJSONInput,
+		GetUserID: userIDFromJWT,
 		ContextGetters: wf.ContextGettersType{
 			"comment":      commentFromCommentID,
 			"article":      articleFromArticleSlug,
