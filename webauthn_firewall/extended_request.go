@@ -137,10 +137,16 @@ func (wfirewall *WebauthnFirewall) newExtendedRequest(r *http.Request) *Extended
 	return extendedReq
 }
 
-func (wfirewall *WebauthnFirewall) wrapHandleFn(handleFn HandlerFnType) func(w http.ResponseWriter, r *http.Request) {
+func (wfirewall *WebauthnFirewall) wrapWithExtendedReq(handleFn HandlerFnType) func(w http.ResponseWriter, r *http.Request) {
 	// Wrap the `handleFn` with a function that initializes a `ExtendedRequest`
 	wrappedFn := func(w http.ResponseWriter, r *http.Request) {
 		extendedReq := wfirewall.newExtendedRequest(r)
+
+		// Exit on any errors during `extendedReq` creation
+		if extendedReq.HandleAnyErrors(w) {
+			return
+		}
+
 		handleFn(w, extendedReq)
 	}
 

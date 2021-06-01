@@ -225,7 +225,7 @@ func main() {
 	))
 
 	firewall.Secure("DELETE", "/api/articles/{slug}", firewall.Authn(
-		"Confirm article delete: Name %v",
+		"Confirm article delete: %v",
 		wf.SetContextVar("article", wf.Get_URL("slug")),
 		wf.GetVar("article").SubField("title"),
 	), wf.CustomOptions("DELETE", "GET"))

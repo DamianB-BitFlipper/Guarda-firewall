@@ -47,6 +47,7 @@ func userIDFromSession(r *http.Request) (int64, error) {
 		Ok     bool  `json:"ok"`
 		UserID int64 `json:"uid"`
 	}
+
 	err = tool.PerformRequestJSON(userIDReq, &sessionInfo)
 	if err != nil {
 		return 0, err
@@ -255,7 +256,7 @@ func main() {
 	// 	wf.GetVar("webhook").SubField("URL"),
 	// ))
 
-	firewall.ListenAndServeTLS("server.crt", "server.key")
+	firewall.ListenAndServeTLS("cert.pem", "key.pem")
 }
 
 func init() {

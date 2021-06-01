@@ -198,11 +198,16 @@ func main() {
 	// Initialize a new webauthn firewall as a `CalypsoFirewall` to be able to add custom methods
 	firewall := CalypsoFirewall{wf.NewWebauthnFirewall(firewallConfigs)}
 
+	// Serve a some HTML for iframe access to authorization cookies
+	firewall.Handle("GET", "/wp-admin/rest-proxy/iframe/get_authorization_cookie.html", func(w http.ResponseWriter, r *wf.ExtendedRequest) {
+		http.ServeFile(w, r.Request, "calypso_resources/get_authorization_cookie.html")
+	})
+
 	// Implement the custom `finishLogin` function
 	firewall.Secure("POST", "/wp-login.php", firewall.finishLogin)
 
 	firewall.Secure("POST", "/rest/{version}/sites/{site_id}/settings", firewall.Authn(
-		"Save the profile settings %v %v",
+		"Save the profile settings: %v %v",
 		wf.SetContextVar("language", wf.Get("lang_id")),
 		wf.GetVar("language"),
 		wf.SetContextVar("privacy_setting", wf.Get("blog_public")),
@@ -223,7 +228,7 @@ func main() {
 	))
 
 	firewall.Secure("POST", "/wpcom/{version}/sites/{site_id}/site-address-change", firewall.Authn(
-		"Change site address from %v to %v.%v",
+		"Change site address\n\tfrom: %v\n\tto: %v.%v",
 		wf.Get("old_domain"),
 		wf.Get("blogname"),
 		wf.Get("domain"),

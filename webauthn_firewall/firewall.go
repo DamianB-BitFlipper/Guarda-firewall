@@ -141,7 +141,8 @@ func NewWebauthnFirewall(config *WebauthnFirewallConfig) *WebauthnFirewall {
 
 		proxy := httputil.NewSingleHostReverseProxy(forwardTo)
 		proxy.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+			DisableKeepAlives: true,
 		}
 
 		proxy.ModifyResponse = func(resp *http.Response) error {
@@ -181,7 +182,7 @@ func (wfirewall *WebauthnFirewall) ListenAndServeTLS(cert, key string) {
 	// This function gets called once `wfirewall` has been entirely initialized.
 	// Catch all remaining requests and simply proxy them onward
 	wfirewall.router.PathPrefix("/").
-		HandlerFunc(wfirewall.wrapHandleFn(wfirewall.proxyRequest)).
+		HandlerFunc(wfirewall.wrapWithExtendedReq(wfirewall.proxyRequest)).
 		Methods("OPTIONS", "GET", "POST", "PUT", "DELETE")
 
 	// Start up the server

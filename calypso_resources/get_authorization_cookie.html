@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<script>
+  // From https://public-api.wordpress.com/wp-admin/rest-proxy/?v=2.0#whatever
+  function getWordpressAuth() {
+      var i, splitCookies = document.cookie.split(/;\s*/);
+      for (i = 0; i < splitCookies.length; i++) {
+          if (splitCookies[i].match(/^wp_api=/)) {
+              return (splitCookies = splitCookies[i].split("="))[1];
+          }
+      }
+  }
+
+  const TARGET_ORIGIN = 'https://calypso.localhost:3000';
+  const wp_api = getWordpressAuth();
+
+  window.parent.postMessage(wp_api, TARGET_ORIGIN);
+</script> 
+
+</body>
+</html>
+

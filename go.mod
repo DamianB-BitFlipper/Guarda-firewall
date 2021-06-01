@@ -11,7 +11,9 @@ require (
 	github.com/gorilla/sessions v1.2.1
 	github.com/jinzhu/gorm v1.9.16
 	github.com/mitchellh/mapstructure v1.4.1 // indirect
+	github.com/pkg/profile v1.5.0 // indirect
 	github.com/satori/go.uuid v1.2.0 // indirect
+	gopkg.in/macaron.v1 v1.4.0 // indirect
 	gorm.io/driver/sqlite v1.1.4
 	gorm.io/gorm v1.20.11
 	unknwon.dev/clog/v2 v2.2.0

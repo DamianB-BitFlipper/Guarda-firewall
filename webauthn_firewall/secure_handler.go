@@ -40,9 +40,16 @@ func (wfirewall *WebauthnFirewall) Secure(method, url string, handleFn HandlerFn
 	// Add the `allowMethods` to the OPTIONS of `url` if there are any
 	if len(options.allowMethods) != 0 {
 		optionsHandler := wfirewall.optionsHandler(options.allowMethods...)
-		wfirewall.router.HandleFunc(url, wfirewall.wrapHandleFn(optionsHandler)).Methods("OPTIONS")
+		wfirewall.router.HandleFunc(url, wfirewall.wrapWithExtendedReq(optionsHandler)).Methods("OPTIONS")
 	}
 
 	// Register the `url` and `method` with the HTTP router
-	wfirewall.router.HandleFunc(url, wfirewall.wrapHandleFn(handleFn)).Methods(method)
+	wfirewall.router.HandleFunc(url, wfirewall.wrapWithExtendedReq(handleFn)).Methods(method)
+}
+
+// Alias function `Handle` to `Secure` for better code documentation. Some routes should
+// still be handled by the firewall, but not necessarily webauthn secured
+func (wfirewall *WebauthnFirewall) Handle(method, url string, handleFn HandlerFnType, optArgs ...FirewallSecureArgs) {
+	wfirewall.Secure(method, url, handleFn, optArgs...)
+	return
 }

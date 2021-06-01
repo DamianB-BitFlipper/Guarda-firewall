@@ -11,7 +11,8 @@ import (
 func PerformRequestJSON(req *http.Request, responseBody interface{}) error {
 	// TODO: Make this a confiruable option in the `initHTTP` function
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		DisableKeepAlives: true,
 	}
 	client := &http.Client{Transport: tr}
 	resp, err := client.Do(req)

@@ -34,9 +34,6 @@ func (wfirewall *WebauthnFirewall) preamble(w http.ResponseWriter, r *ExtendedRe
 }
 
 func (wfirewall *WebauthnFirewall) proxyRequest(w http.ResponseWriter, r *ExtendedRequest) {
-	// Call the firewall preamble
-	//wfirewall.preamble(w, r)
-	// ADDED
 	if wfirewall.verbose {
 		logRequest(r)
 	}
@@ -113,7 +110,7 @@ func CheckWebauthnAssertion(
 
 func (wfirewall *WebauthnFirewall) webauthnSecure(getAuthnText func(*ExtendedRequest) string) HandlerFnType {
 	return func(w http.ResponseWriter, r *ExtendedRequest) {
-		// If an error has already occured (usually during initialization), exit now
+		// If an error has already occured (usually during some initialization), exit now
 		if r.HandleAnyErrors(w) {
 			return
 		}
